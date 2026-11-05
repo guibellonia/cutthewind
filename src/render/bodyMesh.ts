@@ -1,6 +1,7 @@
-// Builds the body meshes (v2) from a BodyShape: lower body, cabin, fender flares, bumpers, skirts.
+// Builds the body meshes from a BodyShape (real-car blend sections): one lofted shell split into material
+// buckets with atlas UVs, end caps, optional fender-flare sweeps, and helpers for projected surface patches.
 import * as THREE from 'three';
-import { BodyShape, P_SHOULDER, SEC_N, lerp, sstep } from './bodyShape';
+import { BodyShape, NA, sstep } from './bodyShape';
 
 export const ATLAS = 2048;
 export const SIDE_H = 640;
@@ -10,25 +11,28 @@ export const SOLID_Y = 2016;
 export const SIDE_REF_H = 1.6;
 export const TOP_REF_W = 2.3;
 
-export type Bucket = 'side' | 'top' | 'hood' | 'roof' | 'glass' | 'pillar' | 'under';
+export type Bucket = 'side' | 'top' | 'hood' | 'roof' | 'under';
 
 export interface CapInfo { wc: number; yMin: number; yMax: number; z: number }
-export interface BumperInfo { len: number; faceA: number; faceB: number; yBot: number; yTop: number; wc: number; z: number }
+export interface BumperInfo { wc: number; yBot: number; yTop: number; z: number; len: number; faceA: number; faceB: number }
 
 export interface BodyGeometry {
   shape: BodyShape;
   buckets: Partial<Record<Bucket, THREE.BufferGeometry>>;
   capF: THREE.BufferGeometry;
   capR: THREE.BufferGeometry;
-  capFInfo: CapInfo;
-  capRInfo: CapInfo;
   flares: THREE.BufferGeometry | null;
-  skirts: THREE.BufferGeometry | null;
-  bumperF: THREE.BufferGeometry;
-  bumperR: THREE.BufferGeometry;
-  bumperFInfo: BumperInfo;
-  bumperRInfo: BumperInfo;
+  frontInfo: BumperInfo;
+  rearInfo: BumperInfo;
+  /** greenhouse overlay with uv = (s, y) for the side windows */
+  glassSide: THREE.BufferGeometry | null;
+  /** greenhouse overlay with uv = (s, x) for the windshield and rear glass */
+  glassTop: THREE.BufferGeometry | null;
+  glassFrame: GlassFrame;
 }
+
+/** Mapping of the glass overlay uvs: u = (s - s0)/(s1 - s0); side v = (y - y0)/(y1 - y0); top v = 0.5 + x/(2 xw). */
+export interface GlassFrame { s0: number; s1: number; y0: number; y1: number; xw: number }
 
 class Builder {
   pos: number[] = [];
@@ -48,18 +52,12 @@ class Builder {
   }
   tri(a: number, b: number, c: number) {
     const P = this.pos, N = this.nrm;
-    const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
-    const e1 = [P[b * 3] - ax, P[b * 3 + 1] - ay, P[b * 3 + 2] - az];
-    const e2 = [P[c * 3] - ax, P[c * 3 + 1] - ay, P[c * 3 + 2] - az];
-    const cx = e1[1] * e2[2] - e1[2] * e2[1];
-    const cy = e1[2] * e2[0] - e1[0] * e2[2];
-    const cz = e1[0] * e2[1] - e1[1] * e2[0];
+    const e1 = [P[b * 3] - P[a * 3], P[b * 3 + 1] - P[a * 3 + 1], P[b * 3 + 2] - P[a * 3 + 2]];
+    const e2 = [P[c * 3] - P[a * 3], P[c * 3 + 1] - P[a * 3 + 1], P[c * 3 + 2] - P[a * 3 + 2]];
+    const cx = e1[1] * e2[2] - e1[2] * e2[1], cy = e1[2] * e2[0] - e1[0] * e2[2], cz = e1[0] * e2[1] - e1[1] * e2[0];
     if (Math.hypot(cx, cy, cz) < 1e-10) return;
-    const nx = N[a * 3] + N[b * 3] + N[c * 3];
-    const ny = N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1];
-    const nz = N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2];
-    if (cx * nx + cy * ny + cz * nz < 0) this.idx.push(a, c, b);
-    else this.idx.push(a, b, c);
+    const nx = N[a * 3] + N[b * 3] + N[c * 3], ny = N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1], nz = N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2];
+    if (cx * nx + cy * ny + cz * nz < 0) this.idx.push(a, c, b); else this.idx.push(a, b, c);
   }
   quad(a: number, b: number, c: number, d: number) { this.tri(a, b, c); this.tri(a, c, d); }
   geometry(): THREE.BufferGeometry | null {
@@ -89,13 +87,10 @@ export function topUV(s: number, x: number): number[] {
 }
 const SOLID_UV = [0.5, 1 - SOLID_Y / ATLAS];
 
-/** Normal on a point grid; columns jFrom..jTo form one smooth group (creases between groups). */
-function gridNormal(P: number[][][], i: number, j: number, jFrom: number, jTo: number, hint: number[]): number[] {
-  const ni = P.length;
-  const i0 = Math.max(0, i - 1), i1 = Math.min(ni - 1, i + 1);
-  const ta = sub(P[i1][j], P[i0][j]);
-  const j0 = Math.max(jFrom, j - 1), j1 = Math.min(jTo, j + 1);
-  let tb = sub(P[i][j1], P[i][j0]);
+function gridNormal(P: number[][][], i: number, j: number, hint: number[]): number[] {
+  const ni = P.length, nj = P[0].length;
+  const ta = sub(P[Math.min(ni - 1, i + 1)][j], P[Math.max(0, i - 1)][j]);
+  let tb = sub(P[i][Math.min(nj - 1, j + 1)], P[i][Math.max(0, j - 1)]);
   if (Math.hypot(tb[0], tb[1], tb[2]) < 1e-7) tb = [0, 1, 0];
   let n = cross(ta, tb);
   if (Math.hypot(n[0], n[1], n[2]) < 1e-10) n = hint.slice();
@@ -106,138 +101,109 @@ function gridNormal(P: number[][][], i: number, j: number, jFrom: number, jTo: n
 
 export function buildBodyGeometry(shape: BodyShape): BodyGeometry {
   const sh = shape.sh;
-  const B: Record<Bucket, Builder> = {
-    side: new Builder(), top: new Builder(), hood: new Builder(), roof: new Builder(), glass: new Builder(), pillar: new Builder(), under: new Builder(),
-  };
-  const crisp = sh.shoulder >= 0.45;
-
-  // =============================================================== LOWER BODY
+  const B: Record<Bucket, Builder> = { side: new Builder(), top: new Builder(), hood: new Builder(), roof: new Builder(), under: new Builder() };
   const S = shape.stations();
   const grid = S.map((s) => shape.section(s));
+  const infos = S.map((s) => shape.info(s));
   const ni = S.length;
+  const bucketFor = (s: number, j: number, inf: { shoulder: number; belt: number; edge: number }, yMid: number, xMid: number): Bucket => {
+    if (j <= 1 && yMid < shape.base + 0.08 && xMid < shape.w0 * 0.75) return 'under';
+    // wheel-well ceiling (points lifted onto the arch tunnel) stays dark
+    if (j < inf.shoulder) { const at = shape.archTop(shape.z(s)); if (at > -Infinity && yMid < at + 0.004) return 'under'; }
+    const cabin = s > sh.wsBase && s < sh.rearGlassBase;
+    if (!cabin) {
+      if (j <= inf.shoulder) return 'side';
+      return s >= shape.hoodStart && s < sh.wsBase ? 'hood' : 'top';
+    }
+    if (j < inf.edge) return 'side';
+    return s >= sh.roofStart && s <= sh.roofEnd ? 'roof' : 'top';
+  };
+
+  const normals = grid.map((row, i) => row.map((p0, j) => {
+    const hint = j <= 2 ? [0.2, -1, 0] : j >= NA - 2 ? [0, 1, 0] : [p0[0], 0.3 * (p0[1] - 0.6), 0];
+    return gridNormal(grid, i, j, hint);
+  }));
+
   for (let i = 0; i < ni - 1; i++) {
     const sMid = (S[i] + S[i + 1]) / 2;
-    for (let j = 0; j < SEC_N - 1; j++) {
-      let b: Bucket;
-      if (j === 0) b = 'under';
-      else if (j < P_SHOULDER) b = 'side';
-      else b = sMid >= shape.hoodStart && sMid < sh.wsBase ? 'hood' : 'top';
-      const isTop = j >= P_SHOULDER;
-      const jFrom = crisp ? (isTop ? P_SHOULDER : 0) : 0;
-      const jTo = crisp ? (isTop ? SEC_N - 1 : P_SHOULDER) : SEC_N - 1;
+    const inf = infos[i + (S[i + 1] - sMid < sMid - S[i] ? 1 : 0)];
+    for (let j = 0; j < NA - 1; j++) {
+      const pA = grid[i][j], pB = grid[i + 1][j + 1];
+      const b = bucketFor(sMid, j, inf, (pA[1] + pB[1]) / 2, (pA[0] + pB[0]) / 2);
       const bl = B[b];
       for (const right of [false, true]) {
         const ids: number[] = [];
         for (const [ii, jj] of [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]]) {
           const p0 = grid[ii][jj];
-          const hint = jj <= 1 ? [0, -1, 0] : jj < P_SHOULDER ? [1, 0, 0] : [0.15, 1, 0];
-          const n0 = gridNormal(grid, ii, jj, jFrom, jTo, hint);
+          const n0 = normals[ii][jj];
           const p = right ? [-p0[0], p0[1], p0[2]] : p0;
           const n = right ? [-n0[0], n0[1], n0[2]] : n0;
-          const uv = b === 'side' ? sideUV(S[ii], p0[1], right) : b === 'under' ? SOLID_UV : topUV(S[ii], right ? -p0[0] : p0[0]);
-          ids.push(bl.vert(`L${ii}_${jj}_${right ? 1 : 0}_${isTop ? 't' : 's'}`, p, n, uv));
+          const uv = b === 'side' ? sideUV(S[ii], p0[1], right) : b === 'top' || b === 'hood' || b === 'roof' ? topUV(S[ii], right ? -p0[0] : p0[0]) : SOLID_UV;
+          ids.push(bl.vert(`${ii}_${jj}_${right ? 1 : 0}`, p, n, uv));
         }
         bl.quad(ids[0], ids[1], ids[2], ids[3]);
       }
     }
   }
 
-  // =============================================================== CABIN
-  const CS = shape.cabinStations();
-  const CN = 11; // B, B', M, E', E, arc x6
-  const ARC_U = [0.1, 0.28, 0.48, 0.68, 0.86, 1.0];
-  const cgrid: number[][][] = CS.map((s) => {
-    const b = shape.cabinBase(s);
-    const e = shape.cabinEdge(s);
-    const t = shape.cabinTop(s);
-    const hgt = e[1] - b[1];
-    const gh = sstep(0.0, 0.12, hgt);
-    const bp = [lerp(b[0], e[0], 0.06), b[1] + Math.min(0.016, hgt * 0.2), b[2]];
-    const m = [lerp(b[0], e[0], 0.5) + 0.007 * gh, lerp(b[1], e[1], 0.5), b[2]];
-    const ep = [lerp(b[0], e[0], 0.93), e[1] - Math.min(0.014, hgt * 0.12), b[2]];
-    const pts = [b, bp, m, ep, e];
-    for (const u of ARC_U) {
-      const x = e[0] * (1 - u);
-      const r = x / Math.max(1e-4, e[0]);
-      pts.push([x, t - (t - e[1]) * r * r, b[2]]);
-    }
-    return pts;
-  });
-  const winA = sh.wsBase + 0.016, winB = sh.sideWindowEnd;
-  const bp0 = sh.bPillar > 0 ? sh.bPillar - 0.011 : -1, bp1 = sh.bPillar > 0 ? sh.bPillar + 0.011 : -1;
-  const cabBucket = (s: number, j: number): Bucket => {
-    if (j <= 3) {
-      const inWin = s > winA && s < winB;
-      if (!inWin) return 'side';
-      if (s > bp0 && s < bp1) return sh.blackPillars ? 'pillar' : 'side';
-      if (j === 0 || j === 3) return 'pillar';
-      if (s < winA + 0.007 || s > winB - 0.007) return 'pillar';
-      if (sh.bPillar > 0 && (Math.abs(s - bp0) < 0.006 || Math.abs(s - bp1) < 0.006)) return 'pillar';
-      return 'glass';
-    }
-    if (s < sh.roofStart) {
-      if (j === 4) return 'top';
-      if (j === 5 || s < sh.wsBase + 0.01 || s > sh.roofStart - 0.007) return 'pillar';
-      return 'glass';
-    }
-    if (s <= sh.roofEnd) return 'roof';
-    if (j === 4) return 'top';
-    if (j === 5 || s < sh.roofEnd + 0.007 || s > sh.rearGlassBase - 0.008) return 'pillar';
-    return 'glass';
-  };
-  for (let i = 0; i < CS.length - 1; i++) {
-    const sMid = (CS[i] + CS[i + 1]) / 2;
-    for (let j = 0; j < CN - 1; j++) {
-      const b = cabBucket(sMid, j);
-      const isTop = j >= 4;
-      const bl = B[b];
-      for (const right of [false, true]) {
-        const ids: number[] = [];
-        for (const [ii, jj] of [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]]) {
-          const p0 = cgrid[ii][jj];
-          const n0 = gridNormal(cgrid, ii, jj, isTop ? 4 : 0, isTop ? CN - 1 : 4, isTop ? [0.1, 1, 0] : [1, 0.25, 0]);
-          const p = right ? [-p0[0], p0[1], p0[2]] : p0;
-          const n = right ? [-n0[0], n0[1], n0[2]] : n0;
-          const uv = b === 'side' ? sideUV(CS[ii], p0[1], right) : b === 'top' || b === 'roof' ? topUV(CS[ii], right ? -p0[0] : p0[0]) : [CS[ii], p0[1]];
-          ids.push(bl.vert(`C${ii}_${jj}_${right ? 1 : 0}_${isTop ? 't' : 's'}`, p, n, uv));
+  // ---- glass overlays: thin shells over the greenhouse whose masks (drawn in glass.ts) define the openings
+  const gs0 = sh.wsBase - 0.02, gs1 = sh.rearGlassBase + 0.02;
+  let gy0 = Infinity;
+  for (let i = 0; i < ni; i++) if (S[i] >= gs0 && S[i] <= gs1) gy0 = Math.min(gy0, grid[i][infos[i].belt][1]);
+  gy0 -= 0.12;
+  const gy1 = shape.H + 0.03;
+  const glassFrame: GlassFrame = { s0: gs0, s1: gs1, y0: gy0, y1: gy1, xw: shape.w0 + 0.05 };
+  const gSide = new Builder(), gTop = new Builder();
+  for (let i = 0; i < ni - 1; i++) {
+    if (S[i + 1] < gs0 || S[i] > gs1) continue;
+    const inf = infos[i];
+    for (let j = 0; j < NA - 1; j++) {
+      const side = j >= Math.max(1, inf.belt - 3) && j <= Math.min(NA - 2, inf.edge + 1);
+      const top = j >= inf.edge - 1;
+      for (const [bl, isTop] of [[gSide, false], [gTop, true]] as const) {
+        if (isTop ? !top : !side) continue;
+        for (const right of [false, true]) {
+          const ids: number[] = [];
+          for (const [ii, jj] of [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]]) {
+            const p0 = grid[ii][jj], n0 = normals[ii][jj];
+            const q = [p0[0] + n0[0] * 0.003, p0[1] + n0[1] * 0.003, p0[2] + n0[2] * 0.003];
+            const p = right ? [-q[0], q[1], q[2]] : q;
+            const n = right ? [-n0[0], n0[1], n0[2]] : n0;
+            const u = (S[ii] - gs0) / (gs1 - gs0);
+            const uv = isTop ? [u, 0.5 + p[0] / (2 * glassFrame.xw)] : [u, (p0[1] - gy0) / (gy1 - gy0)];
+            ids.push(bl.vert(`${ii}_${jj}_${right ? 1 : 0}`, p, n, uv));
+          }
+          bl.quad(ids[0], ids[1], ids[2], ids[3]);
         }
-        bl.quad(ids[0], ids[1], ids[2], ids[3]);
       }
     }
   }
-
   const buckets: Partial<Record<Bucket, THREE.BufferGeometry>> = {};
-  for (const k of Object.keys(B) as Bucket[]) {
-    const g = B[k].geometry();
-    if (g) buckets[k] = g;
-  }
+  for (const k of Object.keys(B) as Bucket[]) { const g = B[k].geometry(); if (g) buckets[k] = g; }
 
-  // =============================================================== CAPS
-  const cap = (secIdx: number, front: boolean): [THREE.BufferGeometry, CapInfo] => {
-    const half = grid[secIdx];
+  const cap = (sec: number[][], front: boolean): THREE.BufferGeometry => {
     const ring: number[][] = [];
-    for (let j = 0; j < SEC_N; j++) ring.push(half[j]);
-    for (let j = SEC_N - 2; j >= 1; j--) ring.push([-half[j][0], half[j][1], half[j][2]]);
-    let wc = 0, yMin = Infinity, yMax = -Infinity, zc = 0;
-    for (const p of ring) { wc = Math.max(wc, Math.abs(p[0])); yMin = Math.min(yMin, p[1]); yMax = Math.max(yMax, p[1]); zc += p[2]; }
-    zc /= ring.length;
-    const cy = (yMin + yMax) / 2;
+    for (let j = 0; j < NA; j++) ring.push(sec[j]);
+    for (let j = NA - 2; j >= 1; j--) ring.push([-sec[j][0], sec[j][1], sec[j][2]]);
+    let cy = 0, cz = 0;
+    for (const p of ring) { cy += p[1]; cz += p[2]; }
+    cy /= ring.length; cz /= ring.length;
     const bl = new Builder();
     const nz = front ? 1 : -1;
-    const uvOf = (p: number[]) => [front ? (p[0] + wc) / (2 * wc) : (wc - p[0]) / (2 * wc), (p[1] - yMin) / (yMax - yMin)];
-    const c = bl.vert('c', [0, cy, zc + nz * 0.004], [0, 0, nz], uvOf([0, cy]));
-    const ids = ring.map((p, k) => bl.vert(`r${k}`, p, [0, 0, nz], uvOf(p)));
+    const c = bl.vert('c', [0, cy, cz - nz * 0.03], [0, 0, nz], SOLID_UV); // slightly concave so end decals stay in front
+    const ids = ring.map((p, k) => bl.vert(`r${k}`, p, [0, 0, nz], SOLID_UV));
     for (let k = 0; k < ids.length; k++) bl.tri(c, ids[k], ids[(k + 1) % ids.length]);
-    return [bl.geometry()!, { wc, yMin, yMax, z: zc }];
+    return bl.geometry()!;
   };
-  const [capF, capFInfo] = cap(0, true);
-  const [capR, capRInfo] = cap(ni - 1, false);
+  const capF = cap(grid[0], true);
+  const capR = cap(grid[ni - 1], false);
 
-  // =============================================================== FENDER FLARES
+  // ---- fender flares (kits)
   const fl = new Builder();
   for (const [za, F] of [[shape.zFA, shape.flareF], [shape.zRA, shape.flareR]] as const) {
-    const Ra = shape.archR;
-    const ySill = sh.sill + 0.03;
+    if (F < 0.005) continue;
+    const Ra = shape.archR + F * 0.4;
+    const ySill = shape.base + 0.05;
     const phi0 = Math.asin(Math.max(-0.95, Math.min(0.2, (ySill - shape.wheelY) / Ra)));
     const phi1 = Math.PI - phi0;
     const NP = 30;
@@ -247,154 +213,40 @@ export function buildBodyGeometry(shape: BodyShape): BodyGeometry {
     for (let a = 0; a <= NP; a++) {
       const phi = phi0 + ((phi1 - phi0) * a) / NP;
       const fade = sstep(phi0, phi0 + 0.3, phi) * (1 - sstep(phi1 - 0.3, phi1, phi)) * 0.7 + 0.3;
-      const row: number[][] = [];
       const zTop = za + Ra * Math.cos(phi);
       const sTop = shape.sOf(zTop);
-      const avail = Math.sin(phi) > 0.05 ? (shape.belt(sTop) - 0.035 - shape.wheelY) / Math.sin(phi) - Ra : band;
+      const avail = Math.sin(phi) > 0.05 ? (shape.shoulderPoint(sTop)[1] - 0.03 - shape.wheelY) / Math.sin(phi) - Ra : band;
       const scale = Math.max(0.25, Math.min(1, avail / band));
-      for (const [rho0, dx] of prof) {
+      P.push(prof.map(([rho0, dx]) => {
         const rho = rho0 > 0 ? rho0 * scale : rho0;
         const r = Ra + rho;
         const z = za + r * Math.cos(phi);
         const y = shape.wheelY + r * Math.sin(phi);
         const s = shape.sOf(z);
-        const x = shape.sideX(s, Math.max(y, ySill)) + dx * fade;
-        row.push([x, y, z]);
-      }
-      P.push(row);
+        return [shape.halfWidth(s) - 0.01 + dx * fade, y, z];
+      }));
     }
-    for (let a = 0; a < NP; a++) {
-      for (let j = 0; j < prof.length - 1; j++) {
-        for (const right of [false, true]) {
-          const ids: number[] = [];
-          for (const [aa, jj] of [[a, j], [a + 1, j], [a + 1, j + 1], [a, j + 1]]) {
-            const p0 = P[aa][jj];
-            const n0 = gridNormal(P, aa, jj, 0, prof.length - 1, [1, 0, 0]);
-            const p = right ? [-p0[0], p0[1], p0[2]] : p0;
-            const n = right ? [-n0[0], n0[1], n0[2]] : n0;
-            ids.push(fl.vert(`F${za}_${aa}_${jj}_${right}`, p, n, sideUV(shape.sOf(p0[2]), p0[1], right)));
-          }
-          fl.quad(ids[0], ids[1], ids[2], ids[3]);
-        }
+    for (let a = 0; a < NP; a++) for (let j = 0; j < prof.length - 1; j++) for (const right of [false, true]) {
+      const ids: number[] = [];
+      for (const [aa, jj] of [[a, j], [a + 1, j], [a + 1, j + 1], [a, j + 1]]) {
+        const p0 = P[aa][jj];
+        const n0 = gridNormal(P, aa, jj, [1, 0, 0]);
+        const p = right ? [-p0[0], p0[1], p0[2]] : p0;
+        const n = right ? [-n0[0], n0[1], n0[2]] : n0;
+        ids.push(fl.vert(`F${za}_${aa}_${jj}_${right}`, p, n, sideUV(shape.sOf(p0[2]), p0[1], right)));
       }
+      fl.quad(ids[0], ids[1], ids[2], ids[3]);
     }
   }
-  const flares = fl.geometry();
 
-  // =============================================================== BUMPERS
-  const bumper = (front: boolean): [THREE.BufferGeometry, BumperInfo] => {
-    const k = shape.k;
-    const sEnd = front ? shape.sArchFront : shape.sArchRear;
-    const sTip = front ? 0 : 1;
-    const ext = front ? k.fbExt : k.rbExt;
-    const chin = front ? k.fbChin : k.rbChin;
-    const yTop = front ? shape.fBumperTop : shape.rBumperTop;
-    const yBot = shape.bottom(sTip) - chin;
-    const path: number[][] = [];
-    const NS = 16;
-    const yMid = (yTop + yBot) / 2;
-    for (let i = 0; i <= NS; i++) {
-      const t = i / NS;
-      const s = lerp(sEnd, sTip, Math.pow(t, 0.8));
-      path.push([shape.sideX(s, Math.max(yMid, shape.bottom(s) + 0.02)), shape.z(s)]);
-    }
-    const tipX = path[path.length - 1][0];
-    const NF = 10;
-    for (let i = 1; i < NF; i++) path.push([tipX * (1 - (2 * i) / NF), shape.z(sTip)]);
-    for (let i = NS; i >= 0; i--) {
-      const p = path[i];
-      path.push([-p[0], p[1]]);
-    }
-    const n = path.length;
-    const zc = front ? shape.zFA : shape.zRA;
-    const arc = [0];
-    for (let i = 1; i < n; i++) arc.push(arc[i - 1] + Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
-    const len = arc[n - 1];
-    const faceA = arc[NS], faceB = arc[NS + NF];
-    const H = yTop - yBot;
-    const pk = front ? 1 : 0.75;
-    const prof: [number, number][] = [[-0.035, 0.03], [0.004, 0.0], [0.03 * pk, 0.035], [0.042 * pk, 0.42], [0.037 * pk, 0.86], [0.02 * pk, 0.975], [-0.014, 1.0]];
-    const P: number[][][] = [];
-    const UV: number[][][] = [];
-    for (let i = 0; i < n; i++) {
-      const pPrev = path[Math.max(0, i - 1)], pNext = path[Math.min(n - 1, i + 1)];
-      const tx = pNext[0] - pPrev[0], tz = pNext[1] - pPrev[1];
-      let nx = tz, nz = -tx;
-      const l = Math.hypot(nx, nz) || 1;
-      nx /= l; nz /= l;
-      if (nx * path[i][0] + nz * (path[i][1] - zc) < 0) { nx = -nx; nz = -nz; }
-      const frontness = Math.abs(nz);
-      const dEnd = Math.min(arc[i], len - arc[i]);
-      const tau = sstep(0.0, 0.28, dEnd);
-      const s = shape.sOf(path[i][1]);
-      const yb = lerp(Math.max(sh.sill + 0.02, shape.bottom(s) + 0.005), yBot, tau);
-      const yt = Math.min(yTop, shape.belt(s) - 0.05);
-      const row: number[][] = [], uvr: number[][] = [];
-      prof.forEach(([d0, fy], j) => {
-        const lift = j >= 2 && j <= 5 ? ext * frontness : 0;
-        const d = d0 * tau - 0.004 * (1 - tau) + lift;
-        const y = lerp(yb, yt, fy);
-        row.push([path[i][0] + nx * d, y, path[i][1] + nz * d]);
-        uvr.push([front ? 1 - arc[i] / len : arc[i] / len, (y - yBot) / Math.max(0.05, H)]);
-      });
-      P.push(row);
-      UV.push(uvr);
-    }
-    const bb = new Builder();
-    for (let i = 0; i < n - 1; i++) {
-      for (let j = 0; j < prof.length - 1; j++) {
-        const ids: number[] = [];
-        for (const [ii, jj] of [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]]) {
-          const p = P[ii][jj];
-          const hint = [p[0], 0.1, (p[2] - zc) * 1.5];
-          ids.push(bb.vert(`${ii}_${jj}`, p, gridNormal(P, ii, jj, 0, prof.length - 1, hint), UV[ii][jj]));
-        }
-        bb.quad(ids[0], ids[1], ids[2], ids[3]);
-      }
-    }
-    return [bb.geometry()!, { len, faceA, faceB, yBot, yTop, wc: tipX, z: shape.z(sTip) }];
-  };
-  const [bumperF, bumperFInfo] = bumper(true);
-  const [bumperR, bumperRInfo] = bumper(false);
-
-  // =============================================================== SKIRTS
-  let skirts: THREE.BufferGeometry | null = null;
-  if (shape.k.skirtDrop > 0 || shape.k.skirtOut > 0) {
-    const sk = new Builder();
-    const out = shape.k.skirtOut, drop = shape.k.skirtDrop;
-    const z0 = shape.zRA + shape.archR + 0.01, z1 = shape.zFA - shape.archR - 0.01;
-    const ys = sh.sill;
-    const prof: [number, number][] = [[-0.012, ys + 0.1], [out * 0.7, ys + 0.075], [out, ys + 0.03], [out + 0.004, ys - drop + 0.014], [out - 0.012, ys - drop], [-0.035, ys - drop + 0.006]];
-    const NZ = 16;
-    const P: number[][][] = [];
-    for (let i = 0; i <= NZ; i++) {
-      const z = lerp(z0, z1, i / NZ);
-      const s = shape.sOf(z);
-      const xs = shape.sideX(s, ys + 0.04);
-      const endT = Math.min(i, NZ - i) / NZ;
-      const taper = Math.min(1, endT * 12);
-      P.push(prof.map(([dx, y]) => [xs + dx * taper - 0.003 * (1 - taper), y + (ys - y) * (1 - taper) * 0.3, z]));
-    }
-    for (let i = 0; i < NZ; i++) for (let j = 0; j < prof.length - 1; j++) {
-      for (const right of [false, true]) {
-        const ids: number[] = [];
-        for (const [ii, jj] of [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]]) {
-          const p0 = P[ii][jj];
-          const n0 = gridNormal(P, ii, jj, 0, prof.length - 1, [1, 0, 0]);
-          const p = right ? [-p0[0], p0[1], p0[2]] : p0;
-          const nn = right ? [-n0[0], n0[1], n0[2]] : n0;
-          ids.push(sk.vert(`${ii}_${jj}_${right}`, p, nn, sideUV(shape.sOf(p0[2]), p0[1], right)));
-        }
-        sk.quad(ids[0], ids[1], ids[2], ids[3]);
-      }
-    }
-    skirts = sk.geometry();
-  }
-
-  return { shape, buckets, capF, capR, capFInfo, capRInfo, flares, skirts, bumperF, bumperR, bumperFInfo, bumperRInfo };
+  const F = shape.face(true), R = shape.face(false);
+  const fw = F.halfW(F.yBot + 0.08, 0.25), rw = R.halfW(R.yBot + 0.1, 0.3);
+  const frontInfo: BumperInfo = { wc: fw * 0.9, yBot: F.yBot, yTop: F.yTop - 0.2, z: shape.zF, len: fw * 2, faceA: 0, faceB: fw * 2 };
+  const rearInfo: BumperInfo = { wc: rw * 0.85, yBot: R.yBot, yTop: R.yTop - 0.36, z: shape.zR, len: rw * 2, faceA: 0, faceB: rw * 2 };
+  return { shape, buckets, capF, capR, flares: fl.geometry(), frontInfo, rearInfo, glassSide: gSide.geometry(), glassTop: gTop.geometry(), glassFrame };
 }
 
-/** Builds a surface patch following the body. `fn(u, v)` returns a point; normals computed numerically. */
+/** Surface patch; `fn(u, v)` returns a point; normals computed numerically and flipped toward `hint`. */
 export function surfacePatch(fn: (u: number, v: number) => number[], nu: number, nv: number, offset: number, hint: number[], flipU = false): THREE.BufferGeometry {
   const pos: number[] = [], nrm: number[] = [], uv: number[] = [], idx: number[] = [];
   const eps = 1e-3;
@@ -404,6 +256,7 @@ export function surfacePatch(fn: (u: number, v: number) => number[], nu: number,
       const pu1 = fn(Math.min(1, u + eps), v), pu0 = fn(Math.max(0, u - eps), v);
       const pv1 = fn(u, Math.min(1, v + eps)), pv0 = fn(u, Math.max(0, v - eps));
       let n = norm(cross(sub(pu1, pu0), sub(pv1, pv0)));
+      if (!isFinite(n[0]) || Math.hypot(n[0], n[1], n[2]) < 0.5) n = norm(hint);
       if (dot(n, hint) < 0) n = [-n[0], -n[1], -n[2]];
       const p = fn(u, v);
       pos.push(p[0] + n[0] * offset, p[1] + n[1] * offset, p[2] + n[2] * offset);
@@ -411,17 +264,14 @@ export function surfacePatch(fn: (u: number, v: number) => number[], nu: number,
       uv.push(flipU ? 1 - u : u, v);
     }
   }
-  for (let a = 0; a < nu; a++) {
-    for (let b = 0; b < nv; b++) {
-      const i0 = a * (nv + 1) + b, i1 = (a + 1) * (nv + 1) + b, i2 = (a + 1) * (nv + 1) + b + 1, i3 = a * (nv + 1) + b + 1;
-      idx.push(i0, i1, i2, i0, i2, i3);
-    }
+  for (let a = 0; a < nu; a++) for (let b = 0; b < nv; b++) {
+    const i0 = a * (nv + 1) + b, i1 = (a + 1) * (nv + 1) + b, i2 = (a + 1) * (nv + 1) + b + 1, i3 = a * (nv + 1) + b + 1;
+    idx.push(i0, i1, i2, i0, i2, i3);
   }
-  const P = pos, N = nrm;
   for (let t = 0; t < idx.length; t += 3) {
     const [a, b, c] = [idx[t], idx[t + 1], idx[t + 2]];
-    const cr = cross(sub([P[b * 3], P[b * 3 + 1], P[b * 3 + 2]], [P[a * 3], P[a * 3 + 1], P[a * 3 + 2]]), sub([P[c * 3], P[c * 3 + 1], P[c * 3 + 2]], [P[a * 3], P[a * 3 + 1], P[a * 3 + 2]]));
-    if (cr[0] * N[a * 3] + cr[1] * N[a * 3 + 1] + cr[2] * N[a * 3 + 2] < 0) { idx[t + 1] = c; idx[t + 2] = b; }
+    const cr = cross(sub([pos[b * 3], pos[b * 3 + 1], pos[b * 3 + 2]], [pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2]]), sub([pos[c * 3], pos[c * 3 + 1], pos[c * 3 + 2]], [pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2]]));
+    if (cr[0] * nrm[a * 3] + cr[1] * nrm[a * 3 + 1] + cr[2] * nrm[a * 3 + 2] < 0) { idx[t + 1] = c; idx[t + 2] = b; }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -429,4 +279,82 @@ export function surfacePatch(fn: (u: number, v: number) => number[], nu: number,
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   g.setIndex(idx);
   return g;
+}
+
+/**
+ * Projected end-face decal (front or rear): a grid over (x, y) whose z follows the body's end surface.
+ * Returns the geometry plus the metric extents so a texture can be drawn in (x, y) space.
+ */
+export function endDecal(shape: BodyShape, front: boolean): { geo: THREE.BufferGeometry; xw: number; yLo: number; yHi: number } {
+  const sA = front ? 0.07 : 0.93;
+  const xw = shape.halfWidth(sA) * 1.02;
+  const yLo = (front ? shape.bottom(0.012) : shape.bottom(0.988)) - 0.02;
+  const yHi = front ? shape.top(0.07) + 0.02 : shape.top(0.93) + 0.02;
+  const NU = 72, NV = 44;
+  const Z: number[][] = [];
+  for (let a = 0; a <= NU; a++) {
+    const col: number[] = [];
+    const x = (a / NU - 0.5) * 2 * xw;
+    for (let b = 0; b <= NV; b++) {
+      const y = lerpN(yLo, yHi, b / NV);
+      col.push(shape.endZ(x, y, front, 0.25));
+    }
+    // fill gaps (above the hood line / outside the outline) with the nearest valid value pushed inward
+    let last = NaN;
+    for (let b = 0; b <= NV; b++) { if (isNaN(col[b])) col[b] = isNaN(last) ? NaN : last + (front ? -0.03 : 0.03); else last = col[b]; }
+    last = NaN;
+    for (let b = NV; b >= 0; b--) { if (isNaN(col[b])) col[b] = isNaN(last) ? (front ? shape.zF - 0.3 : shape.zR + 0.3) : last + (front ? -0.03 : 0.03); else last = col[b]; }
+    Z.push(col);
+  }
+  const fn = (u: number, v: number) => {
+    const a = Math.min(NU - 1e-6, u * NU), b = Math.min(NV - 1e-6, v * NV);
+    const ia = Math.floor(a), ib = Math.floor(b), ta = a - ia, tb = b - ib;
+    const z = lerpN(lerpN(Z[ia][ib], Z[ia + 1][ib], ta), lerpN(Z[ia][ib + 1], Z[ia + 1][ib + 1], ta), tb);
+    const x = (front ? u - 0.5 : 0.5 - u) * 2 * xw;
+    return [x, lerpN(yLo, yHi, v), z];
+  };
+  const geo = surfacePatch(fn, NU, NV, 0.007, [0, 0, front ? 1 : -1]);
+  return { geo, xw, yLo, yHi };
+}
+
+function lerpN(a: number, b: number, t: number) { return a + (b - a) * t; }
+
+/**
+ * Decal projected onto the body along -n: a w×h rectangle centred on C in the plane spanned by U (u axis)
+ * and V (v axis). Rays that miss the body are pulled just inside it so their texels stay hidden.
+ */
+export function projectedPatch(shape: BodyShape, C: number[], n: number[], U: number[], V: number[], w: number, h: number, nu = 16, nv = 8, offset = 0.004): THREE.BufferGeometry {
+  const G: number[][][] = [];
+  const back = [-n[0], -n[1], -n[2]];
+  for (let a = 0; a <= nu; a++) {
+    const col: number[][] = [];
+    for (let b = 0; b <= nv; b++) {
+      const du = (a / nu - 0.5) * w, dv = (b / nv - 0.5) * h;
+      const q = [C[0] + U[0] * du + V[0] * dv, C[1] + U[1] * du + V[1] * dv, C[2] + U[2] * du + V[2] * dv];
+      const o = [q[0] + n[0] * 0.3, q[1] + n[1] * 0.3, q[2] + n[2] * 0.3];
+      const hit = shape.raycast(o, back, 0.75);
+      col.push(hit ?? [q[0] - n[0] * 0.06, q[1] - n[1] * 0.06, q[2] - n[2] * 0.06]);
+    }
+    G.push(col);
+  }
+  const fn = (u: number, v: number) => {
+    const fa = Math.min(nu - 1e-6, u * nu), fb = Math.min(nv - 1e-6, v * nv);
+    const ia = Math.floor(fa), ib = Math.floor(fb), ta = fa - ia, tb = fb - ib;
+    const p00 = G[ia][ib], p10 = G[ia + 1][ib], p01 = G[ia][ib + 1], p11 = G[ia + 1][ib + 1];
+    return [0, 1, 2].map((k) => lerpN(lerpN(p00[k], p10[k], ta), lerpN(p01[k], p11[k], ta), tb));
+  };
+  return surfacePatch(fn, nu, nv, offset, n);
+}
+
+/** Mirror a geometry across x = 0 (positions, normals and winding). */
+export function mirrorX(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  const m = g.clone();
+  m.applyMatrix4(new THREE.Matrix4().makeScale(-1, 1, 1));
+  const idx = m.getIndex();
+  if (idx) {
+    const arr = idx.array as Uint16Array | Uint32Array;
+    for (let i = 0; i < arr.length; i += 3) { const t = arr[i + 1]; arr[i + 1] = arr[i + 2]; arr[i + 2] = t; }
+    idx.needsUpdate = true;
+  }
+  return m;
 }

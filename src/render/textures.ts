@@ -1,16 +1,18 @@
-// Canvas-generated textures: carbon, lights, front/rear fascias, vents, tyres, plates.
+// Canvas-generated textures: carbon, headlights, front/rear end decals, vents, tyres, plates.
 import * as THREE from 'three';
 import type { CarModel, GrilleStyle, HeadlightStyle, TaillightStyle, VisualConfig } from '../core/types';
 import { visualPart } from '../data/visualParts';
 import { drawLogo } from './logos';
+import type { BodyShape } from './bodyShape';
+import { panelLayout } from './panels';
 
 type Ctx = CanvasRenderingContext2D;
 
-export function canvas(w: number, h: number): [HTMLCanvasElement, Ctx] {
+export function canvas(w: number, h: number, willReadFrequently = false): [HTMLCanvasElement, Ctx] {
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
-  return [c, c.getContext('2d')!];
+  return [c, c.getContext('2d', { willReadFrequently })!];
 }
 
 export function tex(c: HTMLCanvasElement, srgb = true): THREE.CanvasTexture {
@@ -118,9 +120,19 @@ export function headlightTextures(style: HeadlightStyle): { map: THREE.CanvasTex
   const [e, ex] = canvas(W, H);
   ex.fillStyle = '#000'; ex.fillRect(0, 0, W, H);
   const housing = (shape: () => void, fill: string | CanvasGradient = '#1a1d22') => {
+    // socket: the gap between the lamp and the body panels around it
     shape();
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 12; ctx.strokeStyle = '#020203'; ctx.stroke();
     ctx.fillStyle = fill; ctx.fill();
-    ctx.lineWidth = 4; ctx.strokeStyle = '#0a0b0c'; ctx.stroke();
+    ctx.save();
+    shape(); ctx.clip();
+    const sg = ctx.createLinearGradient(0, 0, 0, H);
+    sg.addColorStop(0, 'rgba(0,0,0,0.55)'); sg.addColorStop(0.3, 'rgba(0,0,0,0)'); sg.addColorStop(0.85, 'rgba(255,255,255,0)'); sg.addColorStop(1, 'rgba(255,255,255,0.18)');
+    ctx.fillStyle = sg; ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+    shape();
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(200,210,220,0.35)'; ctx.stroke();
   };
   const glow = (x: number, y: number, r: number, col = '#ffffff', a = 1) => {
     const g = ex.createRadialGradient(x, y, 0, x, y, r);
@@ -136,18 +148,18 @@ export function headlightTextures(style: HeadlightStyle): { map: THREE.CanvasTex
     case 'projector':
     case 'angelEyes':
     case 'smoked': {
-      housing(() => rrect(ctx, 14, 26, 228, 76, 34), style === 'smoked' ? darkGlass : glass);
-      for (const x of [74, 174]) {
-        chromeBowl(ctx, x, 64, 30, style === 'smoked' ? '#5a6068' : '#dfe6ee');
+      housing(() => rrect(ctx, 10, 16, 236, 96, 40), style === 'smoked' ? darkGlass : glass);
+      for (const x of [72, 180]) {
+        chromeBowl(ctx, x, 64, 40, style === 'smoked' ? '#5a6068' : '#dfe6ee');
         ctx.fillStyle = style === 'projector' ? '#bfe0ff' : '#f6f9ff';
-        ctx.beginPath(); ctx.arc(x, 64, style === 'projector' ? 14 : 9, 0, Math.PI * 2); ctx.fill();
-        glow(x, 64, 26, '#fffbe8');
+        ctx.beginPath(); ctx.arc(x, 64, style === 'projector' ? 18 : 12, 0, Math.PI * 2); ctx.fill();
+        glow(x, 64, 34, '#fffbe8');
         if (style === 'angelEyes') {
-          ctx.strokeStyle = '#d8f0ff'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(x, 64, 33, 0, Math.PI * 2); ctx.stroke();
-          ex.strokeStyle = '#bfe6ff'; ex.lineWidth = 7; ex.beginPath(); ex.arc(x, 64, 33, 0, Math.PI * 2); ex.stroke();
+          ctx.strokeStyle = '#d8f0ff'; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(x, 64, 42, 0, Math.PI * 2); ctx.stroke();
+          ex.strokeStyle = '#bfe6ff'; ex.lineWidth = 8; ex.beginPath(); ex.arc(x, 64, 42, 0, Math.PI * 2); ex.stroke();
         }
       }
-      if (style === 'smoked') { ctx.fillStyle = 'rgba(0,0,0,0.45)'; rrect(ctx, 14, 26, 228, 76, 34); ctx.fill(); }
+      if (style === 'smoked') { ctx.fillStyle = 'rgba(0,0,0,0.45)'; rrect(ctx, 10, 16, 236, 96, 40); ctx.fill(); }
       break;
     }
     case 'dualOval': {
@@ -237,9 +249,9 @@ export function headlightTextures(style: HeadlightStyle): { map: THREE.CanvasTex
   return r;
 }
 
-// --------------------------------------------------------------------------- FRONT FASCIA
-
-export interface FasciaLayout { wc: number; yMin: number; yMax: number }
+// --------------------------------------------------------------------------- FRONT / REAR END DECALS
+// The body ends come from real-car shells, so lights, grilles, intakes and plates are drawn into transparent
+// textures in the car's own metric (x, y) frame and projected onto the front and rear faces.
 
 export function resolveHeadlight(model: CarModel, v: VisualConfig): HeadlightStyle {
   const p = visualPart('headlights', v.headlights).p.style as string;
@@ -250,16 +262,6 @@ export function resolveHeadlight(model: CarModel, v: VisualConfig): HeadlightSty
 export function resolveTaillight(model: CarModel, v: VisualConfig): TaillightStyle {
   const p = visualPart('taillights', v.taillights).p.style as string;
   return p === 'stock' ? model.shape.taillight : (p as TaillightStyle);
-}
-
-function paintFill(ctx: Ctx, color: string, w: number, h: number) {
-  ctx.fillStyle = color;
-  ctx.fillRect(0, 0, w, h);
-  const g = ctx.createLinearGradient(0, 0, 0, h);
-  g.addColorStop(0, 'rgba(255,255,255,0.06)');
-  g.addColorStop(1, 'rgba(0,0,0,0.18)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, w, h);
 }
 
 export function drawPlate(ctx: Ctx, cx: number, cy: number, w: number, h: number, text: string, jp = false) {
@@ -293,53 +295,141 @@ function darkFn(ctx: Ctx, X: (m: number) => number, Y: (m: number) => number): D
     g.addColorStop(0, 'rgba(0,0,0,0.65)'); g.addColorStop(0.35, 'rgba(0,0,0,0)');
     ctx.fillStyle = g; ctx.fillRect(ax, ay, bx - ax, by - ay);
     ctx.restore();
-    ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 2;
+    ctx.strokeStyle = '#030304'; ctx.lineWidth = 9;
     rrect(ctx, ax, ay, bx - ax, by - ay, r); ctx.stroke();
+    ctx.strokeStyle = 'rgba(190,198,208,0.28)'; ctx.lineWidth = 2;
+    rrect(ctx, ax + 4, ay + 4, bx - ax - 8, by - ay - 8, Math.max(0, r - 3)); ctx.stroke();
   };
 }
 
 const jpPlate = (model: CarModel) => model.brand === 'kairo' || model.brand === 'mizuno' || model.brand === 'takeda';
 
-/** Front header panel (body cap above the bumper): grille, face-mounted headlights, badge. */
-export function frontFasciaTextures(model: CarModel, v: VisualConfig, L: FasciaLayout & { bumperTop: number }): { map: THREE.CanvasTexture; emissive: THREE.CanvasTexture } {
-  const aspect = (2 * L.wc) / (L.yMax - L.yMin);
-  const W = 512, H = Math.max(96, Math.min(400, Math.round(W / aspect)));
+/** Metric extents of an end decal (see bodyMesh.endDecal). */
+export interface DecalFrame { xw: number; yLo: number; yHi: number }
+
+/** Placement of the left headlight on the front face (mirrored for the right). */
+export interface LampBox { xi: number; xo: number; yc: number; h: number }
+
+export function headlightBox(shape: BodyShape, model: CarModel, v: VisualConfig): LampBox {
+  const style = resolveHeadlight(model, v);
+  const F = shape.face(true);
+  const h = style === 'slimRect' || style === 'ledStrip' ? 0.15 : style === 'quadRound' || style === 'sealedRect' || style === 'blackQuad' ? 0.2 : 0.18;
+  const yc = F.yTop - h * 0.3;
+  const xo = Math.max(0.34, F.halfW(yc, 0.36) - 0.01);
+  const wide = model.shape.grille === 'muscleWide';
+  const w = Math.min(0.56, Math.max(0.33, xo * (wide ? 0.66 : 0.62)));
+  return { xi: xo - w, xo, yc, h };
+}
+
+/** Placement of the left taillight cluster on the rear face. */
+export function taillightBox(shape: BodyShape): LampBox {
+  const R = shape.face(false);
+  const h = Math.min(0.21, Math.max(0.14, (R.yTop - R.yBot) * 0.32));
+  const yc = R.yTop - 0.025 - h / 2;
+  const xo = Math.max(0.34, R.halfW(yc, 0.22) - 0.01);
+  return { xi: xo * 0.36, xo, yc, h };
+}
+
+function decalCanvas(D: DecalFrame) {
+  const W = 1024;
+  const H = Math.max(160, Math.min(560, Math.round((W * (D.yHi - D.yLo)) / (2 * D.xw))));
   const [c, ctx] = canvas(W, H);
   const [e, ex] = canvas(W, H);
+  ctx.clearRect(0, 0, W, H);
   ex.fillStyle = '#000'; ex.fillRect(0, 0, W, H);
-  paintFill(ctx, v.paint.finish === 'carbon' ? '#1a1c1f' : v.paint.color, W, H);
-  const X = (xm: number) => W / 2 + (xm / L.wc) * (W / 2);
-  const Y = (ym: number) => H * (1 - (ym - L.yMin) / (L.yMax - L.yMin));
+  return { c, ctx, e, ex, W, H };
+}
+
+/** Front face: grille, bumper intakes, fog lights, plate, lip and badge (headlights are separate patches). */
+export function frontDecalTextures(model: CarModel, v: VisualConfig, shape: BodyShape, D: DecalFrame): { map: THREE.CanvasTexture; emissive: THREE.CanvasTexture } {
+  const { c, ctx, e, ex, W, H } = decalCanvas(D);
+  const X = (x: number) => (W * (x + D.xw)) / (2 * D.xw);
+  const Y = (y: number) => H * (1 - (y - D.yLo) / (D.yHi - D.yLo));
+  const px = (m: number) => (W * m) / (2 * D.xw);
+  const F = shape.face(true);
+  const hb = headlightBox(shape, model, v);
   const sh = model.shape;
-  const wc = L.wc;
-  const y0 = L.bumperTop, y1 = L.yMax;
-  const hh = y1 - y0;
-  const gY = (f: number) => y0 + hh * f;
   const dark = darkFn(ctx, X, Y);
+  // ---- upper grille between the headlights
+  const gTop = F.yTop - 0.012;
+  const gBot = Math.max(F.yBot + 0.17, Math.min(hb.yc - hb.h / 2 - 0.01, F.yTop - 0.2));
+  const gw = Math.max(0.15, hb.xi - 0.03);
+  const gY = (f: number) => gBot + (gTop - gBot) * f;
   switch (sh.grille) {
-    case 'smallRect': dark(-wc * 0.2, gY(0.25), wc * 0.2, gY(0.78), 'bars', 6); break;
-    case 'largeTwinIntake': dark(-wc * 0.34, gY(0.12), -wc * 0.04, gY(0.85), 'bars', 10); dark(wc * 0.04, gY(0.12), wc * 0.34, gY(0.85), 'bars', 10); break;
-    case 'smile': dark(-wc * 0.38, gY(0.2), wc * 0.38, gY(0.6), 'mesh', 30); break;
-    case 'barGrille': dark(-wc * 0.4, gY(0.2), wc * 0.4, gY(0.8), 'bars', 6); break;
+    case 'smallRect': dark(-gw * 0.8, gY(0.1), gw * 0.8, gY(0.9), 'bars', 8); break;
+    case 'largeTwinIntake': dark(-gw * 0.95, gY(0.05), -gw * 0.08, gY(0.92), 'bars', 10); dark(gw * 0.08, gY(0.05), gw * 0.95, gY(0.92), 'bars', 10); break;
+    case 'smile': dark(-gw * 0.95, gY(0.08), gw * 0.95, gY(0.62), 'mesh', 30); break;
+    case 'barGrille': dark(-gw * 0.95, gY(0.12), gw * 0.95, gY(0.88), 'bars', 6); break;
     case 'exoticMouth': break;
-    case 'muscleWide': dark(-wc * 0.95, gY(0.1), wc * 0.95, gY(0.86), 'bars', 8); break;
-    case 'honeycombSplit': dark(-wc * 0.42, gY(0.2), -wc * 0.05, gY(0.78), 'honey', 6); dark(wc * 0.05, gY(0.2), wc * 0.42, gY(0.78), 'honey', 6); break;
-    case 'slot': dark(-wc * 0.36, gY(0.35), wc * 0.36, gY(0.62), 'bars', 5); break;
-  }
-  if (sh.grille === 'muscleWide') { ctx.strokeStyle = '#c9ced4'; ctx.lineWidth = 3; rrect(ctx, X(-wc * 0.95), Y(gY(0.86)), X(wc * 0.95) - X(-wc * 0.95), Y(gY(0.1)) - Y(gY(0.86)), 6); ctx.stroke(); }
-  if (sh.lightMount === 'face') {
-    const ht = headlightTextures(resolveHeadlight(model, v));
-    const img = ht.map.image as HTMLCanvasElement, em = ht.emissive.image as HTMLCanvasElement;
-    const hw = X(wc * 0.36) - X(0), hgt = Math.min(hw * 0.5, (Y(gY(0.05)) - Y(gY(0.92))));
-    for (const side of [-1, 1]) {
-      const cx = X(side * wc * 0.66), cy = Y(gY(0.48));
-      ctx.save(); ctx.translate(cx, cy); if (side < 0) ctx.scale(-1, 1); ctx.drawImage(img, -hw / 2, -hgt / 2, hw, hgt); ctx.restore();
-      ex.save(); ex.translate(cx, cy); if (side < 0) ex.scale(-1, 1); ex.drawImage(em, -hw / 2, -hgt / 2, hw, hgt); ex.restore();
+    case 'muscleWide': {
+      const mw = hb.xo + 0.01;
+      dark(-mw, hb.yc - hb.h * 0.62, mw, hb.yc + hb.h * 0.62, 'bars', 8);
+      ctx.strokeStyle = '#c9ced4'; ctx.lineWidth = 4; rrect(ctx, X(-mw), Y(hb.yc + hb.h * 0.62), px(2 * mw), Y(hb.yc - hb.h * 0.62) - Y(hb.yc + hb.h * 0.62), 8); ctx.stroke();
+      break;
     }
+    case 'honeycombSplit': dark(-gw * 0.95, gY(0.12), -gw * 0.1, gY(0.86), 'honey', 6); dark(gw * 0.1, gY(0.12), gw * 0.95, gY(0.86), 'honey', 6); break;
+    case 'slot': dark(-gw * 0.98, gY(0.32), gw * 0.98, gY(0.7), 'bars', 6); break;
   }
-  // seam where the header meets the bumper
-  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, Y(y0) - 1, W, 3);
-  drawLogo(ctx, model.brand, X(0), Y(gY(sh.grille === 'smile' ? 0.75 : sh.grille === 'slot' ? 0.8 : 0.5)), Math.min(Math.abs(Y(gY(0.9)) - Y(gY(0.1))) * 0.75, W * 0.07));
+  // ---- bumper
+  const kit = visualPart('frontBumper', v.frontBumper).p;
+  const bTop = gBot - 0.03, bBot = F.yBot + 0.025;
+  // bumper cover seam: under the headlights, out to the fenders (continues on the sides in the paint atlas)
+  {
+    const L = panelLayout(shape, model, v);
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const sd of [-1, 1]) {
+      ctx.strokeStyle = '#040405'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(X(sd * (hb.xi + 0.02)), Y(L.frontSeamY)); ctx.lineTo(X(sd * D.xw), Y(L.frontSeamY)); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(X(sd * (hb.xi + 0.02)), Y(L.frontSeamY) - 3); ctx.lineTo(X(sd * D.xw), Y(L.frontSeamY) - 3); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  const bY = (f: number) => bBot + (bTop - bBot) * f;
+  const wc = F.halfW(bY(0.4), 0.2) * 0.9;
+  const intake = kit.intake === 'stock' ? (sh.grille === 'exoticMouth' ? 'exotic' : sh.grille === 'slot' ? 'center' : 'slot') : kit.intake;
+  let plateX = 0, plateY = 0.66;
+  switch (intake) {
+    case 'center': dark(-wc * 0.45, bY(0.08), wc * 0.45, bY(0.42), 'mesh', 14); plateY = 0.7; break;
+    case 'triple': dark(-wc * 0.3, bY(0.08), wc * 0.3, bY(0.45), 'mesh', 10); dark(-wc * 0.88, bY(0.1), -wc * 0.45, bY(0.45), 'mesh', 10); dark(wc * 0.45, bY(0.1), wc * 0.88, bY(0.45), 'mesh', 10); plateY = 0.72; break;
+    case 'wide': dark(-wc * 0.9, bY(0.06), wc * 0.9, bY(0.48), 'mesh', 16); plateX = -wc * 0.52; plateY = 0.74; break;
+    case 'dualSide': dark(-wc * 0.94, bY(0.08), -wc * 0.46, bY(0.6), 'honey', 10); dark(wc * 0.46, bY(0.08), wc * 0.94, bY(0.6), 'honey', 10); dark(-wc * 0.34, bY(0.08), wc * 0.34, bY(0.3), 'honey', 6); plateY = 0.6; break;
+    case 'mesh': dark(-wc * 0.94, bY(0.06), wc * 0.94, bY(0.58), 'mesh', 12); plateX = wc * 0.52; plateY = 0.78; break;
+    case 'slats': dark(-wc * 0.8, bY(0.08), wc * 0.8, bY(0.44), 'slats', 18); plateY = 0.7; break;
+    case 'exotic': dark(-wc * 0.55, bY(0.1), wc * 0.55, bY(0.62), 'mesh', 26); dark(-wc * 1.0, bY(0.12), -wc * 0.65, bY(0.66), 'mesh', 14); dark(wc * 0.65, bY(0.12), wc * 1.0, bY(0.66), 'mesh', 14); plateY = 0.82; break;
+    case 'slot': default: dark(-wc * 0.72, bY(0.06), wc * 0.72, bY(0.36), 'bars', 10); plateY = 0.66;
+  }
+  // lower air dam: a textured black strip that gives the bumper a defined bottom edge
+  if (!kit.lip) {
+    const ad = Math.min(0.05, (bTop - bBot) * 0.16);
+    ctx.save();
+    rrect(ctx, X(-wc * 0.96), Y(F.yBot + ad), px(wc * 1.92), Y(F.yBot - 0.02) - Y(F.yBot + ad), 6); ctx.clip();
+    meshFill(ctx, 0, 0, W, H, 'bars', '#0c0d0f', '#1d1f23');
+    ctx.restore();
+  }
+  // fogs
+  const fog = kit.fog ?? 0;
+  if (fog) for (const side of [-1, 1]) {
+    const cx = X(side * wc * 0.78), cy = Y(bY(fog === 3 ? 0.55 : 0.4));
+    const r = px(fog === 3 ? 0.05 : 0.032);
+    if (fog === 2) { ctx.fillStyle = '#c9ced4'; rrect(ctx, cx - r * 1.7, cy - r * 1.1, r * 3.4, r * 2.2, 4); ctx.fill(); }
+    chromeBowl(ctx, cx, cy, r, '#fff6d0');
+    const g = ex.createRadialGradient(cx, cy, 0, cx, cy, r * 1.3);
+    g.addColorStop(0, '#fff2c0'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ex.fillStyle = g; ex.beginPath(); ex.arc(cx, cy, r * 1.3, 0, Math.PI * 2); ex.fill();
+  }
+  // lip
+  if (kit.lip) { ctx.fillStyle = kit.lip === 2 ? '#15171a' : '#0d0e10'; ctx.fillRect(0, Y(F.yBot + 0.035), W, H - Y(F.yBot + 0.035)); }
+  // plate
+  const jp = jpPlate(model);
+  const pw = jp ? 0.33 : 0.44, ph = jp ? 0.15 : 0.11;
+  const pyc = Math.min(bY(plateY), bTop - ph / 2 - 0.01);
+  ctx.fillStyle = '#060607'; rrect(ctx, X(plateX - pw / 2 - 0.012), Y(pyc + ph / 2 + 0.012), px(pw + 0.024), px(ph + 0.024), 6); ctx.fill();
+  drawPlate(ctx, X(plateX), Y(pyc), px(pw), px(ph), v.plate, jp);
+  // badge
+  const badgeY = sh.grille === 'smile' ? gY(0.78) : sh.grille === 'exoticMouth' ? gY(0.55) : sh.grille === 'slot' ? gY(0.86) : sh.grille === 'muscleWide' ? hb.yc : gY(0.5);
+  drawLogo(ctx, model.brand, X(0), Y(badgeY), Math.min(px(0.075), Math.abs(Y(gY(0.9)) - Y(gY(0.1))) * 0.75));
   return { map: tex(c), emissive: tex(e) };
 }
 
@@ -358,114 +448,42 @@ export function exhaustLayout(kind: string, wc: number): { x: number; r: number;
   }
 }
 
-/** Grille panel for the sloped nose between the headlights (alpha outside the grille). */
-export function grilleTexture(model: CarModel): THREE.CanvasTexture {
-  const W = 512, H = 128;
-  const [c, ctx] = canvas(W, H);
-  ctx.clearRect(0, 0, W, H);
-  const sh = model.shape;
-  const X = (f: number) => W / 2 + f * (W / 2);
-  const Y = (f: number) => H * (1 - f);
-  const dark = darkFn(ctx, X, Y);
-  switch (sh.grille) {
-    case 'smallRect': dark(-0.32, 0.18, 0.32, 0.8, 'bars', 8); break;
-    case 'largeTwinIntake': dark(-0.72, 0.08, -0.06, 0.92, 'bars', 14); dark(0.06, 0.08, 0.72, 0.92, 'bars', 14); break;
-    case 'smile': dark(-0.6, 0.1, 0.6, 0.55, 'mesh', 26); break;
-    case 'barGrille': dark(-0.8, 0.15, 0.8, 0.85, 'bars', 8); break;
-    case 'exoticMouth': dark(-0.4, 0.1, 0.4, 0.3, 'mesh', 10); break;
-    case 'muscleWide': dark(-0.95, 0.1, 0.95, 0.9, 'bars', 8); break;
-    case 'honeycombSplit': dark(-0.8, 0.12, -0.08, 0.86, 'honey', 8); dark(0.08, 0.12, 0.8, 0.86, 'honey', 8); break;
-    case 'slot': dark(-0.7, 0.3, 0.7, 0.6, 'bars', 6); break;
-  }
-  drawLogo(ctx, model.brand, X(0), Y(sh.grille === 'smile' || sh.grille === 'exoticMouth' ? 0.72 : sh.grille === 'slot' ? 0.82 : 0.5), H * 0.42);
-  return tex(c);
-}
-
-export interface BumperLayout { len: number; faceA: number; faceB: number; yBot: number; yTop: number; wc: number }
-
-/** Front bumper skin: intakes, plate, fog lights, lip. u runs around the bumper. */
-export function frontBumperTextures(model: CarModel, v: VisualConfig, B: BumperLayout): { map: THREE.CanvasTexture; emissive: THREE.CanvasTexture } {
-  const W = 1024;
-  const Hm = B.yTop - B.yBot;
-  const H = Math.max(96, Math.min(320, Math.round((W * Hm) / B.len) * 1));
-  const [c, ctx] = canvas(W, H);
-  const [e, ex] = canvas(W, H);
-  ex.fillStyle = '#000'; ex.fillRect(0, 0, W, H);
-  paintFill(ctx, v.paint.finish === 'carbon' ? '#1a1c1f' : v.paint.color, W, H);
-  const X = (xm: number) => W * (0.5 + xm / B.len);
-  const Y = (ym: number) => H * (1 - (ym - B.yBot) / Hm);
-  const gY = (f: number) => B.yBot + Hm * f;
-  const wc = B.wc;
-  const sh = model.shape;
-  const kit = visualPart('frontBumper', v.frontBumper).p;
-  const dark = darkFn(ctx, X, Y);
-  const intake = kit.intake === 'stock' ? (sh.grille === 'exoticMouth' ? 'exotic' : sh.grille === 'muscleWide' ? 'slot' : sh.grille === 'slot' ? 'center' : 'slot') : kit.intake;
-  let plateX = 0, plateY = 0.68;
-  switch (intake) {
-    case 'center': dark(-wc * 0.45, gY(0.12), wc * 0.45, gY(0.5), 'mesh', 14); plateY = 0.74; break;
-    case 'triple': dark(-wc * 0.3, gY(0.12), wc * 0.3, gY(0.5), 'mesh', 10); dark(-wc * 0.85, gY(0.15), -wc * 0.45, gY(0.45), 'mesh', 10); dark(wc * 0.45, gY(0.15), wc * 0.85, gY(0.45), 'mesh', 10); plateY = 0.74; break;
-    case 'wide': dark(-wc * 0.9, gY(0.1), wc * 0.9, gY(0.55), 'mesh', 16); plateX = -wc * 0.55; plateY = 0.76; break;
-    case 'dualSide': dark(-wc * 0.92, gY(0.1), -wc * 0.42, gY(0.62), 'honey', 10); dark(wc * 0.42, gY(0.1), wc * 0.92, gY(0.62), 'honey', 10); dark(-wc * 0.32, gY(0.1), wc * 0.32, gY(0.3), 'honey', 6); plateY = 0.62; break;
-    case 'mesh': dark(-wc * 0.92, gY(0.08), wc * 0.92, gY(0.62), 'mesh', 12); plateX = wc * 0.55; plateY = 0.8; break;
-    case 'slats': dark(-wc * 0.78, gY(0.1), wc * 0.78, gY(0.48), 'slats', 18); plateY = 0.72; break;
-    case 'exotic': dark(-wc * 0.6, gY(0.12), wc * 0.6, gY(0.68), 'mesh', 26); dark(-wc * 1.0, gY(0.15), -wc * 0.68, gY(0.6), 'mesh', 14); dark(wc * 0.68, gY(0.15), wc * 1.0, gY(0.6), 'mesh', 14); plateY = 0.84; break;
-    case 'slot': default: dark(-wc * 0.55, gY(0.14), wc * 0.55, gY(0.3), 'bars', 6); plateY = 0.62;
-  }
-  // fogs
-  const fog = kit.fog ?? 0;
-  if (fog) for (const side of [-1, 1]) {
-    const cx = X(side * wc * 0.74), cy = Y(gY(fog === 3 ? 0.55 : 0.4));
-    const r = fog === 3 ? H * 0.16 : H * 0.09;
-    if (fog === 2) { ctx.fillStyle = '#c9ced4'; rrect(ctx, cx - r * 1.7, cy - r * 1.1, r * 3.4, r * 2.2, 4); ctx.fill(); }
-    chromeBowl(ctx, cx, cy, r, '#fff6d0');
-    const g = ex.createRadialGradient(cx, cy, 0, cx, cy, r * 1.3);
-    g.addColorStop(0, '#fff2c0'); g.addColorStop(1, 'rgba(0,0,0,0)');
-    ex.fillStyle = g; ex.beginPath(); ex.arc(cx, cy, r * 1.3, 0, Math.PI * 2); ex.fill();
-  }
-  // side markers near the ends
-  for (const side of [-1, 1]) { ctx.fillStyle = '#d97a12'; rrect(ctx, X(side * (wc + 0.12)) - 10, Y(gY(0.62)), 20, H * 0.07, 3); ctx.fill(); }
-  if (kit.lip) { ctx.fillStyle = kit.lip === 2 ? '#15171a' : '#0d0e10'; ctx.fillRect(X(-wc - 0.2), Y(gY(0.09)), X(wc + 0.2) - X(-wc - 0.2), H); }
-  // shadow at the top roll-in and bottom
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, 'rgba(0,0,0,0.35)'); g.addColorStop(0.06, 'rgba(0,0,0,0)'); g.addColorStop(0.94, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.5)');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  const pw = X(0.21) - X(0) * 1, ph = Y(B.yBot) - Y(B.yBot + 0.11);
-  drawPlate(ctx, X(plateX), Y(gY(Math.min(0.82, plateY))), (X(0.21) - X(-0.21)), Math.min(ph, H * 0.32), v.plate, jpPlate(model));
-  void pw;
-  return { map: tex(c), emissive: tex(e) };
-}
-
-/** Rear tail panel (body cap above the rear bumper): taillights, badge, model name. */
-export function rearFasciaTextures(model: CarModel, v: VisualConfig, L: FasciaLayout & { bumperTop: number }): { map: THREE.CanvasTexture; emissive: THREE.CanvasTexture } {
-  const aspect = (2 * L.wc) / (L.yMax - L.yMin);
-  const W = 512, H = Math.max(96, Math.min(400, Math.round(W / aspect)));
-  const [c, ctx] = canvas(W, H);
-  const [e, ex] = canvas(W, H);
-  ex.fillStyle = '#000'; ex.fillRect(0, 0, W, H);
-  paintFill(ctx, v.paint.finish === 'carbon' ? '#1a1c1f' : v.paint.color, W, H);
-  const X = (xm: number) => W / 2 - (xm / L.wc) * (W / 2);
-  const Y = (ym: number) => H * (1 - (ym - L.yMin) / (L.yMax - L.yMin));
-  const y0 = L.bumperTop, hh = L.yMax - y0;
+/** Rear face: taillights, badge, model name, plate, reflectors, exhaust cut-outs and diffuser area. */
+export function rearDecalTextures(model: CarModel, v: VisualConfig, shape: BodyShape, D: DecalFrame, exhaustKind: string, ex0: { wc: number; yBot: number; r: number }): { map: THREE.CanvasTexture; emissive: THREE.CanvasTexture } {
+  const { c, ctx, e, ex, W, H } = decalCanvas(D);
+  const X = (xm: number) => (W * (D.xw - xm)) / (2 * D.xw);
+  const Y = (ym: number) => H * (1 - (ym - D.yLo) / (D.yHi - D.yLo));
+  const px = (m: number) => (W * m) / (2 * D.xw);
+  const RF = shape.face(false);
+  const tb = taillightBox(shape);
+  // the band [yc-h/2, yc+h/2] maps to fractions 0.3..0.8 of gY so the per-style layouts stay readable
+  const hh = tb.h / 0.5;
+  const y0 = tb.yc - tb.h / 2 - 0.3 * hh;
   const gY = (f: number) => y0 + hh * f;
-  const wc = L.wc;
+  const wc = tb.xo;
   const style = resolveTaillight(model, v);
   const box = (sd: number, a: number, b: number) => (sd > 0 ? [wc * b, wc * a] : [-wc * a, -wc * b]);
   const R = (x0: number, yy0: number, x1: number, yy1: number) => { const ax = Math.min(X(x0), X(x1)), bx = Math.max(X(x0), X(x1)); const ay = Math.min(Y(yy0), Y(yy1)), by = Math.max(Y(yy0), Y(yy1)); return [ax, ay, bx - ax, by - ay]; };
   const red = (x0: number, a: number, x1: number, b: number, r = 6) => {
-    const [px, py, pw, ph] = R(x0, a, x1, b);
-    const g = ctx.createLinearGradient(0, py, 0, py + ph);
+    const [qx, qy, qw, qh] = R(x0, a, x1, b);
+    const g = ctx.createLinearGradient(0, qy, 0, qy + qh);
     g.addColorStop(0, '#ff4a40'); g.addColorStop(0.5, '#b00e14'); g.addColorStop(1, '#5c0306');
-    ctx.fillStyle = g; rrect(ctx, px, py, pw, ph, r); ctx.fill();
-    ex.fillStyle = '#ff2a2a'; rrect(ex, px, py, pw, ph, r); ex.fill();
+    ctx.fillStyle = g; rrect(ctx, qx, qy, qw, qh, r); ctx.fill();
+    ex.fillStyle = '#ff2a2a'; rrect(ex, qx, qy, qw, qh, r); ex.fill();
   };
   const clear = (x0: number, a: number, x1: number, b: number, r = 5) => {
-    const [px, py, pw, ph] = R(x0, a, x1, b);
-    const g = ctx.createLinearGradient(0, py, 0, py + ph);
+    const [qx, qy, qw, qh] = R(x0, a, x1, b);
+    const g = ctx.createLinearGradient(0, qy, 0, qy + qh);
     g.addColorStop(0, '#eef2f6'); g.addColorStop(1, '#7c858f');
-    ctx.fillStyle = g; rrect(ctx, px, py, pw, ph, r); ctx.fill();
+    ctx.fillStyle = g; rrect(ctx, qx, qy, qw, qh, r); ctx.fill();
   };
-  const amber = (x0: number, a: number, x1: number, b: number) => { const [px, py, pw, ph] = R(x0, a, x1, b); ctx.fillStyle = '#d97a12'; rrect(ctx, px, py, pw, ph, 4); ctx.fill(); };
-  const housing = (x0: number, a: number, x1: number, b: number, r = 8) => { const [px, py, pw, ph] = R(x0, a, x1, b); ctx.fillStyle = '#0b0c0e'; rrect(ctx, px - 4, py - 4, pw + 8, ph + 8, r); ctx.fill(); };
+  const amber = (x0: number, a: number, x1: number, b: number) => { const [qx, qy, qw, qh] = R(x0, a, x1, b); ctx.fillStyle = '#d97a12'; rrect(ctx, qx, qy, qw, qh, 4); ctx.fill(); };
+  const housing = (x0: number, a: number, x1: number, b: number, r = 8) => {
+    const [qx, qy, qw, qh] = R(x0, a, x1, b);
+    ctx.fillStyle = '#020203'; rrect(ctx, qx - 9, qy - 9, qw + 18, qh + 18, r + 4); ctx.fill();
+    ctx.fillStyle = '#0b0c0e'; rrect(ctx, qx - 4, qy - 4, qw + 8, qh + 8, r); ctx.fill();
+    ctx.strokeStyle = 'rgba(200,205,215,0.25)'; ctx.lineWidth = 1.5; rrect(ctx, qx - 4, qy - 4, qw + 8, qh + 8, r); ctx.stroke();
+  };
   const both = (fn: (sd: number) => void) => { fn(1); fn(-1); };
   const lo = 0.3, hi = 0.8;
   switch (style) {
@@ -484,9 +502,9 @@ export function rearFasciaTextures(model: CarModel, v: VisualConfig, L: FasciaLa
     case 'triangle':
       both((sd) => {
         const xo = X(sd * wc * 0.99), xi = X(sd * wc * 0.42);
-        ctx.fillStyle = '#0b0c0e'; ctx.beginPath(); ctx.moveTo(xo, Y(gY(0.9))); ctx.lineTo(xi, Y(gY(0.86))); ctx.lineTo(xo, Y(gY(0.12))); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#0b0c0e'; ctx.beginPath(); ctx.moveTo(xo, Y(gY(0.9))); ctx.lineTo(xi, Y(gY(0.86))); ctx.lineTo(xo, Y(gY(0.2))); ctx.closePath(); ctx.fill();
         const g = ctx.createLinearGradient(xi, 0, xo, 0); g.addColorStop(0, '#ff3b3b'); g.addColorStop(1, '#6c0508');
-        const tri = (cx: CanvasRenderingContext2D) => { cx.beginPath(); cx.moveTo(xo - (xo - xi) * 0.03, Y(gY(0.84))); cx.lineTo(xi + (xo - xi) * 0.1, Y(gY(0.8))); cx.lineTo(xo - (xo - xi) * 0.03, Y(gY(0.22))); cx.closePath(); };
+        const tri = (cx: CanvasRenderingContext2D) => { cx.beginPath(); cx.moveTo(xo - (xo - xi) * 0.03, Y(gY(0.84))); cx.lineTo(xi + (xo - xi) * 0.1, Y(gY(0.8))); cx.lineTo(xo - (xo - xi) * 0.03, Y(gY(0.28))); cx.closePath(); };
         ctx.fillStyle = g; tri(ctx); ctx.fill();
         ex.fillStyle = '#ff2a2a'; tri(ex); ex.fill();
       });
@@ -494,9 +512,9 @@ export function rearFasciaTextures(model: CarModel, v: VisualConfig, L: FasciaLa
     case 'roundQuad':
     case 'roundQuadAfter':
       both((sd) => {
-        if (style === 'roundQuadAfter') { const [x0, x1] = box(sd, 0.38, 0.98); housing(x0, gY(0.12), x1, gY(0.9), 10); }
+        if (style === 'roundQuadAfter') { const [x0, x1] = box(sd, 0.38, 0.98); housing(x0, gY(0.24), x1, gY(0.86), 10); }
         for (const f of [0.56, 0.84]) {
-          const cx = X(sd * wc * f), cy = Y(gY(0.5)), r = Math.min(Math.abs(Y(gY(0.86)) - Y(gY(0.14))) / 2, Math.abs(X(wc * 0.13) - X(0)));
+          const cx = X(sd * wc * f), cy = Y(gY(0.55)), r = Math.min(Math.abs(Y(gY(0.82)) - Y(gY(0.28))) / 2, px(wc * 0.12));
           ctx.fillStyle = '#0b0c0e'; ctx.beginPath(); ctx.arc(cx, cy, r + 3, 0, Math.PI * 2); ctx.fill();
           const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, r); g.addColorStop(0, '#ff6b5b'); g.addColorStop(0.7, '#c0101a'); g.addColorStop(1, '#5c0306');
           ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
@@ -506,17 +524,17 @@ export function rearFasciaTextures(model: CarModel, v: VisualConfig, L: FasciaLa
       });
       break;
     case 'fullBar':
-      housing(-wc * 0.97, gY(0.3), wc * 0.97, gY(0.75), 6);
-      red(-wc * 0.96, gY(0.34), wc * 0.96, gY(0.71), 4);
-      ctx.fillStyle = 'rgba(0,0,0,0.45)'; for (let k = 0; k < 28; k++) ctx.fillRect(k * (W / 28), Y(gY(0.71)), 1.5, Y(gY(0.34)) - Y(gY(0.71)));
-      clear(-wc * 0.12, gY(0.37), wc * 0.12, gY(0.68), 3);
+      housing(-wc * 0.97, gY(0.36), wc * 0.97, gY(0.75), 6);
+      red(-wc * 0.96, gY(0.4), wc * 0.96, gY(0.71), 4);
+      ctx.fillStyle = 'rgba(0,0,0,0.45)'; for (let k = 0; k < 28; k++) ctx.fillRect(X(-wc) + k * (px(2 * wc) / 28), Y(gY(0.71)), 1.5, Y(gY(0.4)) - Y(gY(0.71)));
+      clear(-wc * 0.12, gY(0.43), wc * 0.12, gY(0.68), 3);
       break;
     case 'vertical':
       both((sd) => {
-        const [x0, x1] = box(sd, 0.62, 0.97);
-        housing(x0, gY(0.08), x1, gY(0.92), 6);
+        const [x0, x1] = box(sd, 0.66, 0.97);
+        housing(x0, gY(0.1), x1, gY(0.9), 6);
         const w3 = (x1 - x0) / 3;
-        for (let k = 0; k < 3; k++) red(x0 + w3 * k + 0.005, gY(0.12), x0 + w3 * (k + 1) - 0.005, gY(0.88), 3);
+        for (let k = 0; k < 3; k++) red(x0 + w3 * k + 0.005, gY(0.14), x0 + w3 * (k + 1) - 0.005, gY(0.86), 3);
       });
       break;
     default:
@@ -529,10 +547,10 @@ export function rearFasciaTextures(model: CarModel, v: VisualConfig, L: FasciaLa
         } else if (style === 'redClear') {
           red(x0, gY(0.52), x1, gY(hi - 0.03), 6); clear(x0, gY(lo + 0.03), x1, gY(0.5), 6);
         } else if (style === 'ledBar') {
-          const [px, py, pw, ph] = R(x0, gY(lo + 0.03), x1, gY(hi - 0.03));
-          ctx.fillStyle = '#2a0204'; rrect(ctx, px, py, pw, ph, 6); ctx.fill();
+          const [qx, qy, qw, qh] = R(x0, gY(lo + 0.03), x1, gY(hi - 0.03));
+          ctx.fillStyle = '#2a0204'; rrect(ctx, qx, qy, qw, qh, 6); ctx.fill();
           for (let i = 0; i < 9; i++) for (let j = 0; j < 3; j++) {
-            const cx = px + (pw * (i + 0.5)) / 9, cy = py + (ph * (j + 0.5)) / 3;
+            const cx = qx + (qw * (i + 0.5)) / 9, cy = qy + (qh * (j + 0.5)) / 3;
             ctx.fillStyle = '#ff4040'; ctx.beginPath(); ctx.arc(cx, cy, 3.2, 0, Math.PI * 2); ctx.fill();
             ex.fillStyle = '#ff2a2a'; ex.beginPath(); ex.arc(cx, cy, 4.5, 0, Math.PI * 2); ex.fill();
           }
@@ -546,53 +564,59 @@ export function rearFasciaTextures(model: CarModel, v: VisualConfig, L: FasciaLa
           if (style === 'boxy') { ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 2; for (let k = 1; k < 4; k++) { const xx = X(x0) + ((X(x1) - X(x0)) * k) / 4; ctx.beginPath(); ctx.moveTo(xx, Y(gY(hi))); ctx.lineTo(xx, Y(gY(lo))); ctx.stroke(); } }
           const ci = sd > 0 ? [x0, x0 + (x1 - x0) * 0.28] : [x1 - (x1 - x0) * 0.28, x1];
           clear(ci[0], gY(lo + 0.06), ci[1], gY(0.45), 3);
-          if (style === 'smoked') { const [px, py, pw, ph] = R(x0, gY(lo), x1, gY(hi)); ctx.fillStyle = 'rgba(10,10,12,0.55)'; rrect(ctx, px, py, pw, ph, 6); ctx.fill(); }
+          if (style === 'smoked') { const [qx, qy, qw, qh] = R(x0, gY(lo), x1, gY(hi)); ctx.fillStyle = 'rgba(10,10,12,0.55)'; rrect(ctx, qx, qy, qw, qh, 6); ctx.fill(); }
         }
       });
   }
-  drawLogo(ctx, model.brand, X(0), Y(gY(0.55)), Math.min(Math.abs(Y(gY(0.9)) - Y(gY(0.2))), W * 0.06));
+  // badge and lettering on the lid between/below the lamps
+  drawLogo(ctx, model.brand, X(0), Y(tb.yc), Math.min(px(0.08), Math.abs(Y(tb.yc + tb.h * 0.4) - Y(tb.yc - tb.h * 0.4))));
+  const textY = Y(tb.yc - tb.h / 2 - 0.035);
   ctx.save();
   ctx.fillStyle = '#d7dce2';
-  ctx.font = `italic 800 ${Math.max(9, H * 0.06)}px Arial, sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.font = `italic 800 ${Math.max(10, px(0.035))}px Arial, sans-serif`;
   ctx.textAlign = 'right';
-  ctx.fillText(model.name.toUpperCase(), X(-wc * 0.36), Y(gY(0.08)) - 2);
+  ctx.fillText(model.name.toUpperCase(), X(-wc * 0.42), textY);
   ctx.textAlign = 'left';
-  ctx.font = `700 ${Math.max(8, H * 0.045)}px Arial, sans-serif`;
-  ctx.fillText(model.trim.toUpperCase(), X(wc * 0.36), Y(gY(0.08)) - 2);
+  ctx.font = `700 ${Math.max(9, px(0.026))}px Arial, sans-serif`;
+  ctx.fillText(model.trim.toUpperCase(), X(wc * 0.42), textY);
   ctx.restore();
-  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, Y(y0) - 1, W, 3);
-  return { map: tex(c), emissive: tex(e) };
-}
-
-/** Rear bumper skin: plate, reflectors, exhaust cut-outs, diffuser area. */
-export function rearBumperTextures(model: CarModel, v: VisualConfig, B: BumperLayout, exhaustKind: string): { map: THREE.CanvasTexture; emissive: THREE.CanvasTexture } {
-  const W = 1024;
-  const Hm = B.yTop - B.yBot;
-  const H = Math.max(96, Math.min(320, Math.round((W * Hm) / B.len)));
-  const [c, ctx] = canvas(W, H);
-  const [e, ex] = canvas(W, H);
-  ex.fillStyle = '#000'; ex.fillRect(0, 0, W, H);
-  paintFill(ctx, v.paint.finish === 'carbon' ? '#1a1c1f' : v.paint.color, W, H);
-  const X = (xm: number) => W * (0.5 - xm / B.len);
-  const Y = (ym: number) => H * (1 - (ym - B.yBot) / Hm);
-  const gY = (f: number) => B.yBot + Hm * f;
-  const wc = B.wc;
+  // trunk lid shut lines and the bumper cover seam (continue on the sides and deck in the paint atlas)
+  {
+    const L = panelLayout(shape, model, v);
+    const seam = (pts: [number, number][]) => {
+      for (const [col, w, dy] of [['#040405', 4, 0], ['rgba(255,255,255,0.14)', 1.5, -3]] as const) {
+        ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath(); pts.forEach(([xm, ym], i) => (i ? ctx.lineTo(X(xm), Y(ym) + dy) : ctx.moveTo(X(xm), Y(ym) + dy))); ctx.stroke();
+      }
+    };
+    seam([[-D.xw, L.rearSeamY], [D.xw, L.rearSeamY]]);
+    for (const sd of [-1, 1]) seam([[sd * L.lidHalfW, L.rearSeamY], [sd * L.lidHalfW, D.yHi]]);
+  }
+  // plate (on the lid when there is room, else in the bumper)
+  const jp = jpPlate(model);
+  const pw = jp ? 0.33 : 0.44, ph = jp ? 0.15 : 0.11;
+  const plateY = Math.max(RF.yBot + 0.2, tb.yc - tb.h / 2 - 0.06 - ph / 2);
+  ctx.fillStyle = '#060607'; rrect(ctx, X(pw / 2 + 0.012), Y(plateY + ph / 2 + 0.012), px(pw + 0.024), px(ph + 0.024), 6); ctx.fill();
+  drawPlate(ctx, X(0), Y(plateY), px(pw), px(ph), v.plate, jp);
+  ex.fillStyle = 'rgba(255,255,230,0.3)'; ex.fillRect(X(0.1), Y(plateY + ph / 2 + 0.012), px(0.2), px(0.01));
+  // bumper: reflectors, diffuser area, exhaust cut-outs
+  const bw = RF.halfW(RF.yBot + 0.12, 0.25) * 0.92;
+  const reflY = Math.min(plateY - 0.02, RF.yBot + 0.15);
+  for (const sd of [-1, 1]) {
+    ctx.fillStyle = '#8a0d10'; rrect(ctx, X(sd * bw * 0.84) - px(0.05), Y(reflY), px(0.1), px(0.022), 2); ctx.fill();
+    ex.fillStyle = '#400'; rrect(ex, X(sd * bw * 0.84) - px(0.05), Y(reflY), px(0.1), px(0.022), 2); ex.fill();
+  }
   const rb = visualPart('rearBumper', v.rearBumper).p;
   if (rb.style !== 'stock') {
-    ctx.fillStyle = rb.style === 'competition' || rb.style === 'ta' ? '#121315' : 'rgba(0,0,0,0.4)';
-    ctx.fillRect(X(wc * 0.7), Y(gY(0.3)), X(-wc * 0.7) - X(wc * 0.7), Y(B.yBot) - Y(gY(0.3)));
-    if (rb.vents) for (const sd of [-1, 1]) { ctx.fillStyle = '#060708'; rrect(ctx, X(sd * wc * 0.9) - 14, Y(gY(0.62)), 28, H * 0.22, 4); ctx.fill(); }
+    ctx.fillStyle = rb.style === 'competition' || rb.style === 'ta' ? '#121315' : 'rgba(0,0,0,0.6)';
+    ctx.fillRect(X(bw * 0.72), Y(RF.yBot + 0.1), px(bw * 1.44), Y(D.yLo) - Y(RF.yBot + 0.1));
+    if (rb.vents) for (const sd of [-1, 1]) { ctx.fillStyle = '#060708'; rrect(ctx, X(sd * bw * 0.92) - px(0.03), Y(RF.yBot + 0.2), px(0.06), px(0.08), 4); ctx.fill(); }
   }
-  for (const sd of [-1, 1]) { ctx.fillStyle = '#8a0d10'; rrect(ctx, X(sd * wc * 0.82) - 22, Y(gY(0.62)), 44, H * 0.07, 2); ctx.fill(); ex.fillStyle = '#400'; rrect(ex, X(sd * wc * 0.82) - 22, Y(gY(0.62)), 44, H * 0.07, 2); ex.fill(); }
-  drawPlate(ctx, X(0), Y(gY(0.6)), X(-0.21) - X(0.21), Math.min(Y(B.yBot) - Y(B.yBot + 0.11), H * 0.34), v.plate, jpPlate(model));
-  ex.fillStyle = 'rgba(255,255,230,0.25)'; ex.fillRect(X(0.12), Y(gY(0.78)), X(-0.12) - X(0.12), H * 0.06);
-  for (const t of exhaustLayout(exhaustKind, wc)) {
+  for (const t of exhaustLayout(exhaustKind, ex0.wc)) {
     ctx.fillStyle = '#050506';
-    ctx.beginPath(); ctx.ellipse(X(t.x), Y(gY(0.2)), H * 0.13 * t.r * (t.oval ? 1.5 : 1), H * 0.12 * t.r, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(X(t.x), Y(ex0.yBot + 0.075), px(ex0.r * t.r * 1.35 * (t.oval ? 1.5 : 1)), px(ex0.r * t.r * 1.3), 0, 0, Math.PI * 2); ctx.fill();
   }
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, 'rgba(0,0,0,0.35)'); g.addColorStop(0.06, 'rgba(0,0,0,0)'); g.addColorStop(0.92, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.5)');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   return { map: tex(c), emissive: tex(e) };
 }
 

@@ -2,6 +2,7 @@
 import type { CarModel, VinylLayer, VisualConfig } from '../core/types';
 import { visualPart } from '../data/visualParts';
 import { ATLAS, SIDE_H, SIDE_REF_H, TOP_H, TOP_REF_W, TOP_Y0 } from './bodyMesh';
+import { drawPanelLines } from './panels';
 import type { BodyShape } from './bodyShape';
 import { drawLogo, drawSponsor } from './logos';
 import { fillCarbon } from './textures';
@@ -205,66 +206,6 @@ export function paintAtlas(ctx: Ctx, model: CarModel, v: VisualConfig, shape: Bo
     }
   }
 
-  // ---- panel lines (drawn last so vinyls appear cut at the gaps)
-  ctx.save();
-  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-  ctx.lineWidth = 3;
-  const sideLine = (s0: number, y0: number, s1: number, y1: number) => {
-    for (const right of [false, true]) {
-      const u0 = right ? 1 - s0 : s0, u1 = right ? 1 - s1 : s1;
-      ctx.beginPath(); ctx.moveTo(sx(u0), sideY(y0, right)); ctx.lineTo(sx(u1), sideY(y1, right)); ctx.stroke();
-    }
-  };
-  const doorF = sh.wsBase - 0.015;
-  const doorR = sh.bPillar > 0 ? sh.bPillar - 0.005 : Math.min(sh.sideWindowEnd + 0.005, sh.roofEnd + 0.03);
-  const sill = shape.bottom(0.5) + 0.04;
-  sideLine(doorF, sill, doorF + 0.01, shape.belt(doorF) + 0.02);
-  sideLine(doorR, sill, doorR + 0.004, shape.belt(doorR) + 0.01);
-  if (sh.bPillar > 0) {
-    const rd = Math.min(sh.sideWindowEnd + 0.01, sh.rearGlassBase - 0.02);
-    sideLine(rd, sill + 0.06, rd, shape.belt(rd) + 0.01);
-  }
-  // door handles
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  for (const right of [false, true]) {
-    for (const s of sh.bPillar > 0 ? [sh.bPillar - 0.03, Math.min(sh.sideWindowEnd - 0.02, sh.rearGlassBase - 0.04)] : [doorR - 0.03]) {
-      const u = right ? 1 - s : s;
-      const y = shape.belt(s) - 0.08;
-      ctx.fillRect(sx(u) - (right ? 0 : 28), sideY(y, right) - 5, 28, 10);
-    }
-  }
-  // fuel door (car's right side, rear quarter)
-  const fs = Math.min(0.86, sh.rearGlassBase - 0.02);
-  ctx.beginPath(); ctx.arc(sx(1 - fs), sideY(shape.belt(fs) - 0.1, true), 22, 0, Math.PI * 2); ctx.stroke();
-  // hood shut lines
-  const hx = shape.halfWidth((shape.hoodStart + sh.wsBase) / 2) * 0.86;
-  ctx.beginPath(); ctx.moveTo(sx(shape.hoodStart), topY(hx)); ctx.lineTo(sx(shape.hoodStart), topY(-hx)); ctx.stroke();
-  for (const sg of [1, -1]) { ctx.beginPath(); ctx.moveTo(sx(shape.hoodStart), topY(sg * hx)); ctx.lineTo(sx(sh.wsBase - 0.01), topY(sg * hx * 0.97)); ctx.stroke(); }
-  // trunk lid lines
-  if (sh.rearGlassBase < 0.95) {
-    const tx = shape.halfWidth(0.92) * 0.8;
-    const t0 = sh.rearGlassBase + 0.01;
-    ctx.beginPath(); ctx.moveTo(sx(t0), topY(tx)); ctx.lineTo(sx(t0), topY(-tx)); ctx.stroke();
-    for (const sg of [1, -1]) { ctx.beginPath(); ctx.moveTo(sx(t0), topY(sg * tx)); ctx.lineTo(sx(0.995), topY(sg * tx)); ctx.stroke(); }
-  }
-  // widebody seams / rivets
-  for (const [slot, za] of [['frontFenders', shape.zFA], ['rearFenders', shape.zRA]] as const) {
-    const p = visualPart(slot, (v as any)[slot]).p;
-    if (!p.seam && !p.rivets) continue;
-    const sc = shape.sOf(za);
-    const R = shape.archR + p.flare * 0.35 + 0.07;
-    for (const right of [false, true]) {
-      const cxp = sx(right ? 1 - sc : sc), cyp = sideY(shape.wheelY, right);
-      const rx = (R / shape.L) * S, ry = (R / SIDE_REF_H) * SIDE_H;
-      if (p.seam) { ctx.beginPath(); ctx.ellipse(cxp, cyp, rx, ry, 0, Math.PI * 1.02, Math.PI * 1.98); ctx.stroke(); }
-      if (p.rivets) {
-        ctx.fillStyle = '#c9ced4';
-        for (let k = 0; k <= 10; k++) {
-          const a = Math.PI * (1.06 + (k / 10) * 0.88);
-          ctx.beginPath(); ctx.arc(cxp + Math.cos(a) * rx * 0.94, cyp + Math.sin(a) * ry * 0.94, 4, 0, Math.PI * 2); ctx.fill();
-        }
-      }
-    }
-  }
-  ctx.restore();
+  // ---- panel gaps (drawn last so vinyls appear cut at the gaps)
+  drawPanelLines(ctx, shape, model, v);
 }

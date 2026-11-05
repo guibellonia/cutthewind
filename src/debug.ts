@@ -28,22 +28,25 @@ export function runDebug(params: URLSearchParams) {
     scene.add(new THREE.HemisphereLight(0xdde6f5, 0x404040, 1.4));
     const kl = new THREE.DirectionalLight(0xffffff, 2.2); kl.position.set(4, 7, 5); scene.add(kl);
     const fl = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), new THREE.MeshStandardMaterial({ color: 0x5a5e66, roughness: 0.8 })); fl.rotation.x = -Math.PI / 2; scene.add(fl);
-    import('./data/bodyTemplates.json').then((mod) => {
-      const T = (mod as any).default as Record<string, { secs: number[][][]; hl: number; wl: number }>;
-      const names = Object.keys(T);
+    import('./data/bodyBlends.json').then((mod) => {
+      const T = (mod as any).default.models as Record<string, { secs: number[][][] }>;
+      const ids = (params.get('models') ?? Object.keys(T).slice(0, 8).join(',')).split(',');
       const side = params.get('side') === '1';
-      names.forEach((name, k) => {
-        const t = T[name];
-        const L = 4.4, H = L * t.hl, W = L * t.wl, base = 0.0;
+      const cols = 4;
+      ids.forEach((id, k) => {
+        const t = T[id];
+        const mdl = CAR_LIST.find((c) => c.id === id)!;
+        const L = mdl.length, W = mdl.width, H = mdl.height, base = 0.15;
         const ns = t.secs.length, na = t.secs[0].length;
         const pos: number[] = [], idx: number[] = [];
+        const zF = mdl.wheelbase / 2 + mdl.frontOverhang;
         for (let i = 0; i < ns; i++) {
-          const z = L / 2 - ((i + 0.5) / ns) * L;
+          const z = zF - ((i + 0.5) / ns) * L;
           for (let j = 0; j < 2 * na - 1; j++) {
             const jj = j < na ? j : 2 * na - 2 - j;
             const sg = j < na ? 1 : -1;
             const [xn, yn] = t.secs[i][jj];
-            pos.push(sg * xn * W / 2, base + yn * H, z);
+            pos.push(sg * xn * W / 2, base + yn * (H - base), z);
           }
         }
         const nr = 2 * na - 1;
@@ -52,14 +55,21 @@ export function runDebug(params: URLSearchParams) {
         g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
         g.setIndex(idx);
         g.computeVertexNormals();
-        const m = new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ color: [0xc4161c, 0x1f6fd1, 0xe0b321, 0xd9dbe0][k % 4], metalness: 0.5, roughness: 0.3, clearcoat: 1, side: THREE.DoubleSide }));
-        if (side) { m.rotation.y = Math.PI / 2; m.position.set((k - 1.5) * 5.2, 0, 0); } else { m.rotation.y = 0.6; m.position.set((k - 1.5) * 5.4, 0, 0); }
-        scene.add(m);
+        const grp = new THREE.Group();
+        grp.add(new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ color: [0xc4161c, 0x1f6fd1, 0xe0b321, 0xd9dbe0][k % 4], metalness: 0.5, roughness: 0.3, clearcoat: 1, side: THREE.DoubleSide })));
+        const tr = (mdl.stockWheelSize * 0.0254) / 2 + (mdl.stockTireWidth * mdl.stockTireProfile) / 100000;
+        for (const za of [mdl.wheelbase / 2, -mdl.wheelbase / 2]) for (const sx of [-1, 1]) {
+          const wh = new THREE.Mesh(new THREE.CylinderGeometry(tr, tr, 0.2, 24), new THREE.MeshStandardMaterial({ color: 0x111111 }));
+          wh.rotation.z = Math.PI / 2; wh.position.set(sx * (W / 2 - 0.12), tr, za); grp.add(wh);
+        }
+        const col = k % cols, row = Math.floor(k / cols);
+        if (side) { grp.rotation.y = Math.PI / 2; grp.position.set((col - 1.5) * 5.3, 0, -row * 6); } else { grp.rotation.y = 0.6; grp.position.set((col - 1.5) * 5.5, 0, -row * 7); }
+        scene.add(grp);
       });
     });
     const cam = new THREE.PerspectiveCamera(26, 1, 0.1, 300);
-    cam.position.set(0, params.get('side') === '1' ? 2 : 6, 19);
-    cam.lookAt(0, 0.6, 0);
+    cam.position.set(0, params.get('side') === '1' ? 3.5 : 8, 24);
+    cam.lookAt(0, 0.2, -3.5);
     r.setView(scene, cam);
     const loop = () => { r.render(1 / 60); requestAnimationFrame(loop); };
     loop();

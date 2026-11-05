@@ -1,21 +1,19 @@
-// Procedural body description (v2). Car-local coordinates: +Z forward, +Y up, +X = car's left side.
-// Origin on the ground, midway between the axles. The car is assembled from distinct parts:
-// a lower body (monocoque below the beltline), a separate cabin (greenhouse), bumpers, fender
-// flares and skirts. This class provides the shared geometric description all parts are built from.
+// Car body description (v3): each fictional model's surface is a blend of 2–3 landmark-aligned real car
+// shells from the ShapeNetCar reference set (CC-BY 4.0), stored as normalised cross-sections in
+// bodyBlends.json. Car-local coordinates: +Z forward, +Y up, +X = car's left side. Origin on the ground,
+// midway between the axles.
 import type { CarModel, ShapeParams, VisualConfig } from '../core/types';
 import { visualPart } from '../data/visualParts';
-import { monotoneCurve } from '../sim/vehicle';
-
-export const SEC_N = 13; // points per half section of the lower body
-export const P_SHOULDER = 6;
-const TOP_U = [0.1, 0.28, 0.48, 0.68, 0.86, 1.0];
+import BLENDS from '../data/bodyBlends.json';
 
 export const sstep = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
 export const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
+
+/** Index of the shoulder point in `compatSection` (used by add-on parts). */
+export const P_SHOULDER = 6;
 
 export interface KitParams {
   fbExt: number; fbChin: number; rbExt: number; rbChin: number;
@@ -39,12 +37,32 @@ export function kitParams(v: VisualConfig): KitParams {
   };
 }
 
+interface BlendData { canon: Record<string, { ws: number; rs: number; re: number; rg: number }>; models: Record<string, { cls: string; secs: number[][][] }> }
+const DATA = BLENDS as unknown as BlendData;
+
+export const NA = 33; // points per half section (bottom centre → top centre)
+
+interface RowInfo { shoulder: number; belt: number; edge: number }
+
+export interface FaceInfo {
+  /** lowest point of the face */
+  yBot: number;
+  /** where the near-vertical face turns into the hood (front) or deck lid (rear) */
+  yTop: number;
+  /** height of the most protruding point */
+  yMin: number;
+  /** half width of the face at height y (points no more than maxSb behind the tip) */
+  halfW: (y: number, maxSb?: number) => number;
+}
+
 export class BodyShape {
   readonly m: CarModel;
   readonly sh: ShapeParams;
   readonly k: KitParams;
   readonly L: number;
   readonly W: number;
+  readonly H: number;
+  readonly base = 0.14;
   readonly zF: number;
   readonly zR: number;
   readonly zFA: number;
@@ -52,78 +70,50 @@ export class BodyShape {
   readonly archR: number;
   readonly wheelY: number;
   readonly w0: number;
-  readonly hoodStart: number;
-  /** total fender flare (stock + kit), metres */
+  readonly hoodStart = 0.07;
   readonly flareF: number;
   readonly flareR: number;
-  readonly hoodCrown: number;
-  readonly deckCrown = 0.028;
-  readonly cabinCrown = 0.012;
   readonly fBumperTop: number;
   readonly rBumperTop: number;
-  readonly sArchFront: number; // s at the front edge of the front arch
-  readonly sArchRear: number; // s at the rear edge of the rear arch
-  /** centreline top profile (nose → hood → windshield → roof → rear glass → deck → tail) */
-  readonly prof: (s: number) => number;
-  readonly H: number;
+  readonly sArchFront: number;
+  readonly sArchRear: number;
+  readonly cls: string;
+  private grid: number[][][];
+  private rows: RowInfo[];
+  private canon: { ws: number; rs: number; re: number; rg: number };
+  private secCache = new Map<number, number[][]>();
 
   constructor(model: CarModel, kit: KitParams) {
     this.m = model;
     this.sh = model.shape;
     this.k = kit;
-    const sh = this.sh;
     this.L = model.length;
     this.W = model.width;
+    this.H = model.height;
     this.zFA = model.wheelbase / 2;
     this.zRA = -model.wheelbase / 2;
     this.zF = this.zFA + model.frontOverhang;
     this.zR = this.zF - this.L;
     const tr = (model.stockWheelSize * 0.0254) / 2 + (model.stockTireWidth * model.stockTireProfile) / 100000;
     this.wheelY = tr;
-    this.archR = Math.max(0.33, tr + 0.04);
-    this.flareF = Math.max(0.012, sh.fenderF + kit.flareF);
-    this.flareR = Math.max(0.012, sh.fenderR + kit.flareR);
-    this.w0 = this.W / 2 - Math.max(sh.fenderF, sh.fenderR, 0.012) - 0.004;
-    this.hoodStart = Math.max(0.035, sh.noseRound * 0.45);
-    this.H = model.height;
-    this.hoodCrown = Math.max(0.035, Math.min(0.07, sh.hoodCrown + 0.015));
-    // Longitudinal centreline profile. Landmark shape follows the median of 28 real sedans/coupes
-    // (ShapeNetCar reference set), warped to each model's stations and heights.
-    {
-      const H = this.H;
-      const ws = sh.wsBase, rs = sh.roofStart, re = sh.roofEnd, rg = sh.rearGlassBase;
-      const hatch = rg > 0.93;
-      const nose = sh.noseH, hood = sh.hoodH, roof = sh.roofH, deck = sh.deckH, tail = sh.tailH;
-      const flatNose = sh.frontTaper > 0.62;
-      const hf = nose + (hood - nose) * (flatNose ? 0.45 : 0.57);
-      const d = rs - ws, r = roof - hood, g = rg - re;
-      const reY = roof - 0.03 * H;
-      const pts: [number, number][] = [
-        [0, nose],
-        [0.016, nose + (hf - nose) * (flatNose ? 0.55 : 0.3)],
-        [0.038, nose + (hf - nose) * (flatNose ? 0.92 : 0.74)],
-        [0.065, hf],
-        [ws, hood],
-        [ws + 0.25 * d, hood + 0.26 * r],
-        [ws + 0.5 * d, hood + 0.54 * r],
-        [ws + 0.78 * d, hood + 0.86 * r],
-        [rs, roof - 0.012 * H],
-        [rs + 0.42 * (re - rs), roof],
-        [re, reY],
-      ];
-      if (hatch) {
-        pts.push([re + 0.45 * g, reY + (deck - reY) * 0.38], [rg, deck], [1, deck - 0.07 * H]);
-      } else {
-        pts.push([re + 0.35 * g, reY + (deck - reY) * 0.3], [re + 0.7 * g, reY + (deck - reY) * 0.7], [rg, deck]);
-        pts.push([rg + (0.97 - rg) * 0.55, deck - (deck - tail) * 0.55], [0.97, tail], [0.99, tail - 0.07 * H], [1, tail - 0.13 * H]);
-      }
-      for (let i = 1; i < pts.length; i++) if (pts[i][0] <= pts[i - 1][0]) pts[i][0] = pts[i - 1][0] + 0.003;
-      this.prof = monotoneCurve(pts.map((p) => p[0]), pts.map((p) => p[1]));
+    this.archR = Math.max(0.32, tr + 0.035);
+    this.flareF = kit.flareF;
+    this.flareR = kit.flareR;
+    this.w0 = this.W / 2;
+    const entry = DATA.models[model.id] ?? Object.values(DATA.models)[0];
+    this.cls = entry.cls;
+    this.grid = entry.secs;
+    this.canon = DATA.canon[entry.cls];
+    this.rows = this.grid.map((row, i) => this.analyseRow(row, (i + 0.5) / this.grid.length));
+    for (const key of ['shoulder', 'belt', 'edge'] as const) {
+      const v = this.rows.map((r) => r[key]);
+      this.rows.forEach((r, i) => {
+        const win = v.slice(Math.max(0, i - 2), i + 3).sort((a, b) => a - b);
+        r[key] = win[Math.floor(win.length / 2)];
+      });
     }
-    const faceLights = sh.lightMount === 'face';
-    this.fBumperTop = sh.noseH - (faceLights ? 0.2 : 0.055);
-    const tailTip = this.prof(1);
-    this.rBumperTop = sh.sill + 0.16 + (tailTip - sh.sill - 0.16) * 0.42;
+    this.fBumperTop = this.top(0.02) - 0.1;
+    this.rBumperTop = this.base + (this.top(0.985) - this.base) * 0.45;
     this.sArchFront = this.sOf(this.zFA + this.archR + 0.03);
     this.sArchRear = this.sOf(this.zRA - this.archR - 0.03);
   }
@@ -131,200 +121,317 @@ export class BodyShape {
   z(s: number) { return this.zF - s * this.L; }
   sOf(z: number) { return (this.zF - z) / this.L; }
 
-  plan(s: number): number {
-    const sh = this.sh;
-    let f = 1;
-    if (s < sh.noseRound) {
-      const u = 1 - s / sh.noseRound;
-      f = sh.frontTaper + (1 - sh.frontTaper) * (1 - u * u);
-    } else if (s > 1 - sh.tailRound) {
-      const u = 1 - (1 - s) / sh.tailRound;
-      f = sh.rearTaper + (1 - sh.rearTaper) * (1 - u * u);
+  /** Model station → canonical template station (piecewise-linear landmark alignment). */
+  private canonS(s: number): number {
+    const sh = this.sh, c = this.canon;
+    const xs = [0, sh.wsBase, sh.roofStart, sh.roofEnd, sh.rearGlassBase, 1];
+    const ys = [0, c.ws, c.rs, c.re, c.rg, 1];
+    for (let i = 1; i < xs.length; i++) if (xs[i] <= xs[i - 1]) xs[i] = xs[i - 1] + 1e-3;
+    if (s <= 0) return 0;
+    if (s >= 1) return 1;
+    let i = 1;
+    while (i < xs.length - 1 && s > xs[i]) i++;
+    const t = (s - xs[i - 1]) / (xs[i] - xs[i - 1]);
+    return ys[i - 1] + (ys[i] - ys[i - 1]) * t;
+  }
+
+  private analyseRow(row: number[][], sc: number): RowInfo {
+    let shoulder = 12, best = -1;
+    for (let j = 6; j < NA - 4; j++) { const [x, y] = row[j]; if (y > 0.3 && y < 0.82 && x > best) { best = x; shoulder = j; } }
+    const c = this.canon;
+    const inCabin = sc > c.ws - 0.02 && sc < c.rg + 0.02;
+    let belt = Math.min(NA - 3, shoulder + 1);
+    let edge = NA - 2;
+    if (inCabin) {
+      for (let j = shoulder + 1; j < NA - 3; j++) if (row[j][0] < best - 0.035) { belt = j; break; }
+      // roof rail: first point (at least ~22 cm above the belt) where the surface turns flatter than 45°
+      const hs = this.H - this.base;
+      for (let j = belt + 1; j < NA - 1; j++) {
+        const dx = (row[j][0] - row[j + 1][0]) * this.w0, dy = (row[j + 1][1] - row[j][1]) * hs;
+        if (dx > dy && (row[j][1] - row[belt][1]) * hs > Math.min(0.22, 0.55 * (row[NA - 1][1] - row[belt][1]) * hs)) { edge = j; break; }
+      }
+      edge = Math.max(belt + 2, Math.min(NA - 3, edge));
     }
-    // subtle "coke bottle": fuller over the front fenders and rear haunches
-    const z = this.z(s);
-    const hump = (za: number, span: number) => Math.max(0, 1 - ((z - za) / span) ** 2);
-    f *= 0.975 + 0.025 * Math.max(hump(this.zFA, 0.9), hump(this.zRA, 1.1));
-    return f;
+    return { shoulder, belt, edge };
   }
 
-  halfWidth(s: number) { return this.w0 * this.plan(s); }
-
-  /** Shoulder (beltline) height. */
-  belt(s: number): number {
-    const sh = this.sh;
-    const ws = sh.wsBase, rg = sh.rearGlassBase;
-    let y: number;
-    if (s <= ws) {
-      const k = sstep(0, 0.09, s);
-      y = this.prof(s) - this.hoodCrown * k - 0.014 * (1 - k);
-    } else if (s >= rg) {
-      y = this.prof(s) - this.deckCrown * (1 - 0.5 * sstep(0.95, 1, s));
-    } else {
-      const b0 = this.prof(ws) - this.hoodCrown, b1 = this.prof(rg) - this.deckCrown;
-      y = lerp(b0, b1, (s - ws) / (rg - ws));
-    }
-    if (this.k.duck > 0) y += this.k.duck * sstep(0.88, 0.995, s);
-    return y;
+  private rowAt(s: number): { row: number[][]; info: RowInfo } {
+    const n = this.grid.length;
+    const f = Math.min(n - 1, Math.max(0, this.canonS(Math.min(1, Math.max(0, s))) * n - 0.5));
+    const i = Math.floor(f), t = f - i;
+    const a = this.grid[i], b = this.grid[Math.min(n - 1, i + 1)];
+    const row = a.map((p, j) => [lerp(p[0], b[j][0], t), lerp(p[1], b[j][1], t)]);
+    const info = t < 0.5 ? this.rows[i] : this.rows[Math.min(n - 1, i + 1)];
+    return { row, info };
   }
 
-  /** Top surface centreline (lower body). Under the cabin it sits just above the beltline. */
-  top(s: number): number {
-    const sh = this.sh;
-    let y: number;
-    if (s <= sh.wsBase || s >= sh.rearGlassBase) y = this.prof(s);
-    else y = this.belt(s) + this.cabinCrown;
-    if (this.k.duck > 0 && s > sh.rearGlassBase) y += this.k.duck * sstep(0.88, 0.995, s);
-    return y;
-  }
-
-  /** Crown of the top surface above the shoulder line. */
-  crown(s: number): number {
-    return Math.max(0.006, this.top(s) - this.belt(s));
-  }
-
-  bottom(s: number): number {
-    const sh = this.sh;
-    let y = sh.sill + 0.06 * (1 - sstep(0.0, 0.08, s)) + 0.17 * sstep(0.88, 1.0, s) ** 1.4;
-    const z = this.z(s);
+  /** Wheel arch tunnel height at z (or -Infinity outside the arches). */
+  archTop(z: number): number {
+    let y = -Infinity;
     for (const za of [this.zFA, this.zRA]) {
-      const R = this.archR;
+      const fl = za === this.zFA ? this.flareF : this.flareR;
+      const R = this.archR + fl * 0.4;
       const dz = z - za;
       if (Math.abs(dz) < R) y = Math.max(y, this.wheelY + Math.sqrt(R * R - dz * dz));
     }
-    return Math.min(y, this.belt(s) - 0.06);
+    return y;
   }
 
-  /** Fender flare amount near station s (used for wheel fitment). */
+  /** Full half section at station s: NA points [x, y, z] from bottom centre to top centre (left side). */
+  section(s: number): number[][] {
+    const key = Math.round(s * 20000);
+    const hit = this.secCache.get(key);
+    if (hit) return hit;
+    const { row, info } = this.rowAt(s);
+    const z0 = this.z(s);
+    const hs = this.H - this.base;
+    const k = this.k;
+    const arch = this.archTop(z0);
+    const between = z0 > this.zRA + this.archR && z0 < this.zFA - this.archR ? 1 : 0;
+    const pts = row.map(([xn, yn], j) => {
+      let x = xn * this.w0;
+      let y = this.base + yn * hs;
+      let z = z0;
+      const lowW = 1 - sstep(this.base + 0.12, this.base + 0.32, y);
+      if (k.fbChin > 0 && s < 0.16) y -= k.fbChin * (1 - sstep(0.07, 0.16, s)) * lowW;
+      if (k.rbChin > 0 && s > 0.86) y -= k.rbChin * sstep(0.86, 0.94, s) * lowW;
+      if (k.fbExt > 0) z += k.fbExt * (1 - sstep(0.0, 0.09, s)) * lowW;
+      if (k.rbExt > 0) z -= k.rbExt * sstep(0.91, 1.0, s) * lowW;
+      if (between && j <= info.shoulder - 3) {
+        y -= k.skirtDrop * lowW;
+        if (xn > 0.6) x += k.skirtOut * lowW;
+      }
+      if (j > info.shoulder) {
+        if (k.hoodBulge > 0 && s > this.hoodStart && s < this.sh.wsBase) {
+          const along = sstep(this.hoodStart + 0.03, this.hoodStart + 0.12, s) * (1 - sstep(this.sh.wsBase - 0.03, this.sh.wsBase - 0.005, s));
+          y += k.hoodBulge * along * Math.max(0, 1 - Math.pow(x / (this.w0 * 0.42), 4));
+        }
+        if (k.duck > 0 && s > this.sh.rearGlassBase) y += k.duck * sstep(0.9, 0.995, s);
+      }
+      if (arch > -Infinity && y < arch && j <= info.shoulder) y = arch;
+      return [x, y, z];
+    });
+    if (this.secCache.size > 4000) this.secCache.clear();
+    this.secCache.set(key, pts);
+    return pts;
+  }
+
+  info(s: number): RowInfo { return this.rowAt(s).info; }
+  shoulderPoint(s: number): number[] { return this.section(s)[this.info(s).shoulder].slice(); }
+
+  halfWidth(s: number): number {
+    const sec = this.section(s);
+    let mx = 0;
+    const sj = this.info(s).shoulder;
+    for (let j = 0; j <= sj; j++) mx = Math.max(mx, sec[j][0]);
+    return mx;
+  }
+
+  belt(s: number): number { return this.section(s)[this.info(s).belt][1]; }
+  top(s: number): number { return this.section(s)[NA - 1][1]; }
+  bottom(s: number): number { return this.section(s)[0][1]; }
+  crown(s: number): number { return this.top(s) - this.belt(s); }
+
   flare(s: number): number {
     const z = this.z(s);
-    const nearF = Math.abs(z - this.zFA) < this.archR * 1.2 ? this.flareF : 0;
-    const nearR = Math.abs(z - this.zRA) < this.archR * 1.2 ? this.flareR : 0;
+    const nearF = Math.abs(z - this.zFA) < this.archR * 1.3 ? this.flareF : 0;
+    const nearR = Math.abs(z - this.zRA) < this.archR * 1.3 ? this.flareR : 0;
     return Math.max(nearF, nearR);
   }
 
   skirtOut(s: number): number {
     const z = this.z(s);
-    const inside = z > this.zRA + this.archR && z < this.zFA - this.archR;
-    return inside ? this.k.skirtOut : 0;
+    return z > this.zRA + this.archR && z < this.zFA - this.archR ? this.k.skirtOut : 0;
   }
 
-  hoodBulgeAt(s: number, x: number, w: number): number {
-    if (this.k.hoodBulge <= 0) return 0;
-    const sh = this.sh;
-    const along = sstep(this.hoodStart + 0.03, this.hoodStart + 0.14, s) * (1 - sstep(sh.wsBase - 0.02, sh.wsBase - 0.004, s));
-    const ramp = 0.35 + 0.65 * sstep(this.hoodStart, sh.wsBase, s);
-    const across = Math.max(0, 1 - Math.pow(Math.abs(x) / (w * 0.4), 4));
-    return this.k.hoodBulge * along * ramp * across;
-  }
-
-  /** Lower-body half section (left side). Returns [x, y, z] for SEC_N points. */
-  section(s: number): number[][] {
-    const sh = this.sh;
-    const yB = this.belt(s);
-    const yb = this.bottom(s);
-    const w = this.halfWidth(s);
-    const cr = this.crown(s);
-    const hb = Math.max(0.06, yB - yb);
-    const shp = sh.shoulder;
-    const pts: number[][] = [];
-    pts.push([0, yb]);
-    pts.push([Math.max(0.05, w - 0.11), yb]);
-    pts.push([w - 0.03, yb + Math.min(0.012, hb * 0.1)]);
-    pts.push([w - 0.007, yb + Math.min(0.065, hb * 0.3)]);
-    pts.push([w, yb + hb * 0.6]);
-    pts.push([w - 0.004 - 0.012 * (1 - shp), yB - Math.min(0.03, hb * 0.2)]);
-    const xs = w - 0.016 - 0.03 * (1 - shp);
-    pts.push([xs, yB]);
-    for (const u of TOP_U) {
-      const x = xs * (1 - u);
-      const e = x / xs;
-      let y = yB + cr * (1 - e * e);
-      y += this.hoodBulgeAt(s, x, w);
-      pts.push([x, y]);
-    }
-    const z = this.z(s);
-    return pts.map(([x, y]) => [x, y, z]);
-  }
-
-  /** Body side x at height y for station s (interpolated on the side polyline). */
+  /** Body side x at height y (left side). */
   sideX(s: number, y: number): number {
     const sec = this.section(s);
-    for (let i = 2; i < P_SHOULDER; i++) {
-      const a = sec[i], b = sec[i + 1];
-      if (y >= a[1] && y <= b[1]) {
+    const sj = this.info(s).shoulder;
+    let best = sec[sj][0];
+    for (let j = 1; j <= sj; j++) {
+      const a = sec[j - 1], b = sec[j];
+      if ((y >= a[1] && y <= b[1]) || (y <= a[1] && y >= b[1])) {
         const t = (y - a[1]) / Math.max(1e-5, b[1] - a[1]);
-        return lerp(a[0], b[0], t);
+        best = lerp(a[0], b[0], t);
       }
     }
-    return y < sec[2][1] ? sec[2][0] : sec[P_SHOULDER][0];
+    return best;
   }
 
-  // ------------------------------------------------------------------ cabin
-  /** Cabin centreline height (windshield / roof / rear glass), for s in [wsBase, rearGlassBase]. */
-  cabinTop(s: number): number {
-    return Math.max(this.prof(s), this.belt(s) + this.cabinCrown + 0.004);
+  /** Outer side x at height y from the unmodified blend row (ignores arch cut-outs and kit deformations). */
+  outerX(s: number, y: number): number {
+    const { row, info } = this.rowAt(s);
+    const hs = this.H - this.base;
+    let best = row[info.shoulder][0] * this.w0;
+    for (let j = 1; j <= info.shoulder; j++) {
+      const ya = this.base + row[j - 1][1] * hs, yb = this.base + row[j][1] * hs;
+      if ((y >= ya && y <= yb) || (y <= ya && y >= yb)) best = lerp(row[j - 1][0], row[j][0], (y - ya) / Math.max(1e-5, yb - ya)) * this.w0;
+    }
+    return best;
   }
 
-  /** Cabin window-sill line (inset from the shoulder). */
-  cabinBase(s: number): number[] {
-    const w = this.halfWidth(s);
-    const xs = w - 0.016 - 0.03 * (1 - this.sh.shoulder);
-    return [xs - 0.045, this.top(s) - this.cabinCrown * 0.3, this.z(s)];
-  }
+  cabinTop(s: number): number { return this.top(s); }
+  cabinBase(s: number): number[] { return this.section(s)[this.info(s).belt].slice(); }
+  cabinEdge(s: number): number[] { return this.section(s)[this.info(s).edge].slice(); }
 
-  /** Roof-edge (top of the daylight opening) point on the left side. */
-  cabinEdge(s: number): number[] {
-    const sh = this.sh;
-    const b = this.cabinBase(s);
-    const t = this.cabinTop(s);
-    const yE = Math.max(b[1], t - sh.roofCrown);
-    const gh = sstep(0.0, 0.14, yE - b[1]);
-    const xE = lerp(b[0], this.halfWidth(s) * sh.tumble, gh);
-    return [xE, yE, b[2]];
-  }
-
-  /** Point on the top surface (cabin or lower body) at lateral position x (>= 0). */
+  /** Point on the top surface (hood, roof, deck) at lateral position x >= 0. */
   topPoint(s: number, x: number): number[] {
-    const sh = this.sh;
     x = Math.abs(x);
-    if (s > sh.wsBase + 0.004 && s < sh.rearGlassBase - 0.004) {
-      const e = this.cabinEdge(s);
-      if (x <= e[0]) {
-        const t = this.cabinTop(s);
-        const u = x / Math.max(1e-4, e[0]);
-        return [x, t - (t - e[1]) * u * u, e[2]];
-      }
-    }
     const sec = this.section(s);
-    for (let i = P_SHOULDER; i < SEC_N - 1; i++) {
-      const a = sec[i], b = sec[i + 1];
+    const sj = this.info(s).shoulder;
+    if (x >= sec[sj][0]) return sec[sj].slice();
+    for (let j = sj; j < NA - 1; j++) {
+      const a = sec[j], b = sec[j + 1];
       if (x <= a[0] && x >= b[0]) {
         const t = (a[0] - x) / Math.max(1e-6, a[0] - b[0]);
         return [x, lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
       }
     }
-    return x > sec[P_SHOULDER][0] ? sec[P_SHOULDER].slice() : sec[SEC_N - 1].slice();
+    return sec[NA - 1].slice();
+  }
+
+  /** 13-point section used by add-on parts (index 6 = shoulder). */
+  compatSection(s: number): number[][] {
+    const sec = this.section(s);
+    const sj = this.info(s).shoulder;
+    const out: number[][] = [];
+    for (let k = 0; k <= 6; k++) out.push(sec[Math.round((sj * k) / 6)]);
+    for (let k = 1; k <= 6; k++) out.push(sec[Math.round(sj + ((NA - 1 - sj) * k) / 6)]);
+    return out;
+  }
+
+  /** z of the front/rear end surface at (x, y), scanning inward from the tip; NaN if not on the end face. */
+  endZ(x: number, y: number, front: boolean, maxS = 0.16): number {
+    const ax = Math.abs(x);
+    const zAt = (ss: number): number => {
+      const sec = this.section(ss);
+      if (y < sec[0][1] - 0.002 || y > sec[NA - 1][1] + 0.002) return NaN;
+      for (let j = 1; j < NA; j++) {
+        const a = sec[j - 1], b = sec[j];
+        if ((y >= a[1] && y <= b[1]) || (y <= a[1] && y >= b[1])) {
+          const t = (y - a[1]) / Math.max(1e-5, b[1] - a[1]);
+          if (ax <= lerp(a[0], b[0], t) + 1e-4) return lerp(a[2], b[2], t);
+        }
+      }
+      return NaN;
+    };
+    let prev = -1;
+    for (let s = 0; s <= maxS; s += 0.0025) {
+      const z = zAt(front ? s : 1 - s);
+      if (!isNaN(z)) {
+        if (prev < 0) return z;
+        // refine between the last miss and this hit
+        let a = prev, b = s, zb = z;
+        for (let k = 0; k < 6; k++) {
+          const m = (a + b) / 2;
+          const zm = zAt(front ? m : 1 - m);
+          if (isNaN(zm)) a = m; else { b = m; zb = zm; }
+        }
+        return zb;
+      }
+      prev = s;
+    }
+    return NaN;
+  }
+
+  /** True if (x, y, z) lies inside the body (half-section point-in-polygon at that station). */
+  inside(x: number, y: number, z: number): boolean {
+    const s = this.sOf(z);
+    if (s < 0 || s > 1) return false;
+    const sec = this.section(s);
+    const px = Math.abs(x);
+    let c = false;
+    for (let j = 0, k = NA - 1; j < NA; k = j++) {
+      const a = sec[j], b = sec[k];
+      if ((a[1] > y) !== (b[1] > y) && px < ((b[0] - a[0]) * (y - a[1])) / (b[1] - a[1]) + a[0]) c = !c;
+    }
+    return c;
+  }
+
+  /** First body-surface hit along o + t·d (d normalised), or null. */
+  raycast(o: number[], d: number[], maxT = 1, step = 0.008): number[] | null {
+    const at = (t: number) => [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];
+    let prev = 0;
+    for (let t = step; t <= maxT; t += step) {
+      const p = at(t);
+      if (this.inside(p[0], p[1], p[2])) {
+        let a = prev, b = t;
+        for (let k = 0; k < 9; k++) { const m = (a + b) / 2; const q = at(m); if (this.inside(q[0], q[1], q[2])) b = m; else a = m; }
+        return at((a + b) / 2);
+      }
+      prev = t;
+    }
+    return null;
+  }
+
+  /** Distance of the end surface behind the tip at (x, y): 0 at the very nose/tail, NaN off the face. */
+  setback(x: number, y: number, front: boolean): number {
+    const z = this.endZ(x, y, front, 0.3);
+    return isNaN(z) ? NaN : front ? this.zF - z : z - this.zR;
+  }
+
+  private faceCache = new Map<string, FaceInfo>();
+
+  /**
+   * Layout of the front or rear face as seen along the car's axis: the height where the near-vertical face
+   * turns into the hood / deck (`yTop`), its lowest point (`yBot`) and its half width at a given height.
+   */
+  face(front: boolean): FaceInfo {
+    const key = front ? 'f' : 'r';
+    const hit = this.faceCache.get(key);
+    if (hit) return hit;
+    const lim = front ? 0.13 : 0.17;
+    let yBot = NaN, yTop = NaN, yMin = Infinity, sbMin = Infinity;
+    for (let y = this.base; y < this.H; y += 0.01) {
+      const sb = this.setback(0, y, front);
+      if (isNaN(sb)) { if (!isNaN(yBot) && y > yMin + 0.1) break; continue; }
+      if (isNaN(yBot) && sb < 0.3) yBot = y;
+      if (sb < sbMin) { sbMin = sb; yMin = y; }
+      if (!isNaN(yBot) && y > yMin && sb > sbMin + lim) { yTop = y; break; }
+    }
+    if (isNaN(yBot)) yBot = this.bottom(front ? 0.01 : 0.99);
+    if (isNaN(yTop)) yTop = front ? this.top(0.04) - 0.04 : this.top(0.96) - 0.04;
+    const widthCache = new Map<number, number>();
+    const halfW = (y: number, maxSb = 0.24) => {
+      const k = Math.round(y * 100) * 1000 + Math.round(maxSb * 100);
+      const c = widthCache.get(k);
+      if (c !== undefined) return c;
+      let w = 0;
+      for (let x = 0; x < this.w0 + 0.1; x += 0.01) {
+        const sb = this.setback(x, y, front);
+        if (isNaN(sb) || sb > maxSb) break;
+        w = x;
+      }
+      widthCache.set(k, w);
+      return w;
+    };
+    const info: FaceInfo = { yBot, yTop, yMin, halfW };
+    this.faceCache.set(key, info);
+    return info;
+  }
+
+  /** Outward normal of the end surface at (x, y), from finite differences of the setback. */
+  faceNormal(x: number, y: number, front: boolean): number[] {
+    const e = 0.02;
+    const zc = this.endZ(x, y, front, 0.3);
+    const zx = this.endZ(x + e, y, front, 0.3), zy = this.endZ(x, y + e, front, 0.3);
+    const zx2 = this.endZ(x - e, y, front, 0.3), zy2 = this.endZ(x, y - e, front, 0.3);
+    const dzdx = !isNaN(zx) && !isNaN(zx2) ? (zx - zx2) / (2 * e) : !isNaN(zx) && !isNaN(zc) ? (zx - zc) / e : 0;
+    const dzdy = !isNaN(zy) && !isNaN(zy2) ? (zy - zy2) / (2 * e) : !isNaN(zy) && !isNaN(zc) ? (zy - zc) / e : 0;
+    const n = front ? [-dzdx, -dzdy, 1] : [dzdx, dzdy, -1];
+    const l = Math.hypot(n[0], n[1], n[2]);
+    return [n[0] / l, n[1] / l, n[2] / l];
   }
 
   stations(): number[] {
     const out: number[] = [];
-    const n = 110;
+    const n = 120;
     for (let i = 0; i <= n; i++) out.push(i / n);
-    for (const s of [0.002, 0.006, 0.012, 0.02, 0.03, 0.97, 0.98, 0.988, 0.994, 0.998]) out.push(s);
     const sh = this.sh;
-    for (const b of [this.hoodStart, sh.wsBase, sh.rearGlassBase, this.sArchFront, this.sArchRear]) out.push(b - 0.001, b + 0.001);
+    for (const b of [this.hoodStart, sh.wsBase, sh.roofStart, sh.roofEnd, sh.rearGlassBase, sh.sideWindowEnd, sh.wsBase + 0.018, this.sArchFront, this.sArchRear]) out.push(b - 0.0012, b + 0.0012);
+    if (sh.bPillar > 0) out.push(sh.bPillar - 0.011, sh.bPillar + 0.011);
+    for (const za of [this.zFA, this.zRA]) for (let k = -12; k <= 12; k++) out.push(this.sOf(za + (k / 12) * (this.archR + 0.08)));
     return Array.from(new Set(out.map((x) => Math.round(x * 100000) / 100000))).filter((x) => x >= 0 && x <= 1).sort((a, b) => a - b);
-  }
-
-  cabinStations(): number[] {
-    const sh = this.sh;
-    const out: number[] = [];
-    const n = 44;
-    for (let i = 0; i <= n; i++) out.push(sh.wsBase + ((sh.rearGlassBase - sh.wsBase) * i) / n);
-    const add = [sh.roofStart, sh.roofEnd, sh.sideWindowEnd, sh.wsBase + 0.016];
-    if (sh.bPillar > 0) add.push(sh.bPillar - 0.011, sh.bPillar + 0.011);
-    for (const b of add) out.push(b - 0.0012, b + 0.0012);
-    return Array.from(new Set(out.map((x) => Math.round(x * 100000) / 100000))).filter((x) => x >= sh.wsBase && x <= sh.rearGlassBase).sort((a, b) => a - b);
   }
 }

@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import type { CarBuild, CarModel, InteriorConfig } from '../core/types';
 import { visualPart } from '../data/visualParts';
-import { BodyShape, P_SHOULDER } from './bodyShape';
+import { BodyShape } from './bodyShape';
 import type { BumperInfo } from './bodyMesh';
 import { surfacePatch } from './bodyMesh';
 import { canvas, exhaustLayout, tex, ventTexture } from './textures';
@@ -238,9 +238,9 @@ export function buildMirrors(shape: BodyShape, build: CarBuild, m: PartMats): TH
       continue;
     }
     const s = sh.wsBase + 0.03;
-    const sec = shape.section(s);
-    const sp = sec[P_SHOULDER];
-    const base = V(sx * (sp[0] - 0.01), sp[1] + 0.05, sp[2]);
+    const sp = shape.shoulderPoint(s);
+    const by = Math.max(sp[1], shape.belt(s));
+    const base = V(sx * (shape.sideX(s, by - 0.02) - 0.015), by + 0.02, sp[2]);
     const aero = p.kind === 'aero';
     const housing = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.06, 4, 10), housingMat);
     housing.rotation.z = Math.PI / 2;
@@ -322,7 +322,8 @@ export function buildExhaust(shape: BodyShape, build: CarBuild, model: CarModel,
     const radial = kind === 'hex' ? 6 : 16;
     const geo = new THREE.CylinderGeometry(r, r, len, radial, 1, true);
     const tip = new THREE.Mesh(geo, tipMat);
-    const z = capR.z + (kind === 'can' ? 0.08 : 0.025);
+    const zs = shape.endZ(t.x, y0, false, 0.3);
+    const z = (isNaN(zs) ? capR.z + 0.05 : zs) + (kind === 'can' ? 0.08 : 0.025);
     if (kind === 'stack') {
       tip.position.set(t.x, y0 + 0.32, z + 0.05);
       tip.rotation.x = -0.6;
@@ -368,41 +369,49 @@ export function buildAero(shape: BodyShape, build: CarBuild, m: PartMats, fbI: B
   const sh = shape.sh;
   // front lip
   const fb = visualPart('frontBumper', v.frontBumper).p;
-  const frontOutline = (sMax: number, out: number, y: number) => {
-    const pts: THREE.Vector3[] = [];
-    const steps = 12;
-    for (let i = steps; i >= 0; i--) { const s = (sMax * i) / steps; const f = 1 - s / sMax; pts.push(V(shape.halfWidth(s) + 0.03 + out * f * 0.3, y, shape.z(s) + 0.03 + out * f)); }
-    for (let i = 1; i <= steps; i++) { const s = (sMax * i) / steps; const f = 1 - s / sMax; pts.push(V(-(shape.halfWidth(s) + 0.03 + out * f * 0.3), y, shape.z(s) + 0.03 + out * f)); }
+  const F = shape.face(true);
+  /** Bumper outline at height y: points (x, z) slightly ahead of the face, from the right corner to the left. */
+  const outline = (y: number, ahead: number): [number, number][] => {
+    const hw = Math.max(0.3, F.halfW(y, 0.32));
+    const pts: [number, number][] = [];
+    const steps = 24;
+    for (let i = 0; i <= steps; i++) {
+      const x = -hw + (2 * hw * i) / steps;
+      const z = shape.endZ(x, y, true, 0.32);
+      pts.push([x, (isNaN(z) ? shape.zF - 0.3 : z) + ahead]);
+    }
     return pts;
   };
+  const lipY = fbI.yBot + 0.012;
   if (fb.lip) {
-    const curve = new THREE.CatmullRomCurve3(frontOutline(Math.min(0.1, shape.sArchFront * 0.9), shape.k.fbExt, fbI.yBot - 0.004));
-    const lip = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.016, 6, false), fb.lip === 2 ? m.carbon : m.black);
+    const curve = new THREE.CatmullRomCurve3(outline(lipY + 0.02, 0.012).map(([x, z]) => V(x, lipY, z)));
+    const lip = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.018, 6, false), fb.lip === 2 ? m.carbon : m.black);
     lip.scale.y = 0.55;
-    lip.position.y = (1 - 0.55) * (fbI.yBot - 0.006);
+    lip.position.y = (1 - 0.55) * lipY;
     g.add(lip);
   }
   // splitter
   const spl = visualPart('splitter', v.splitter).p;
   if (spl.kind !== 'none') {
     const ext = spl.ext as number;
+    const pts = outline(fbI.yBot + 0.03, 0.01);
     const shp = new THREE.Shape();
-    const steps = 10;
-    const samples: [number, number][] = [];
-    for (let i = 0; i <= steps; i++) { const s = (0.14 * i) / steps; samples.push([shape.halfWidth(s) + 0.03, shape.z(s) + 0.04 + shape.k.fbExt + ext * (1 - s / 0.14)]); }
-    shp.moveTo(0, samples[steps][1] - 0.15);
-    for (let i = steps; i >= 0; i--) shp.lineTo(samples[i][0], samples[i][1]);
-    for (let i = 0; i <= steps; i++) shp.lineTo(-samples[i][0], samples[i][1]);
-    shp.lineTo(0, samples[steps][1] - 0.15);
+    const zBack = Math.min(...pts.map((p) => p[1])) - 0.12;
+    shp.moveTo(pts[0][0], zBack);
+    for (const [x, z] of pts) shp.lineTo(x, z + ext * (1 - Math.pow(Math.abs(x) / Math.abs(pts[0][0]), 4) * 0.6));
+    shp.lineTo(pts[pts.length - 1][0], zBack);
+    shp.closePath();
+    // the shape's (x, y) is world (x, z); rotating about X maps shape-y to world z and the extrusion downward
     const geo = new THREE.ExtrudeGeometry(shp, { depth: 0.012, bevelEnabled: false });
     geo.rotateX(Math.PI / 2);
     const plate = new THREE.Mesh(geo, spl.alu ? m.alu : m.carbon);
-    plate.position.y = fbI.yBot - 0.012;
+    plate.position.y = fbI.yBot - 0.004;
     g.add(plate);
     if (spl.kind === 'rods') {
       for (const sx of [-1, 1]) {
         const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.2, 6), m.alu);
-        rod.position.set(sx * capF.wc * 0.6, fbI.yBot + 0.08, capF.z + 0.04 + ext * 0.7);
+        const zr = shape.endZ(sx * capF.wc * 0.6, fbI.yBot + 0.1, true, 0.3);
+        rod.position.set(sx * capF.wc * 0.6, fbI.yBot + 0.06, (isNaN(zr) ? capF.z : zr) + ext * 0.6);
         rod.rotation.x = 0.7;
         g.add(rod);
       }
@@ -413,9 +422,9 @@ export function buildAero(shape: BodyShape, build: CarBuild, m: PartMats, fbI: B
   if (cn.count) {
     for (let k = 0; k < cn.count; k++) {
       for (const sx of [-1, 1]) {
-        const s = 0.03 + k * 0.012;
-        const sec = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [shape.halfWidth(s) + 0.05, (fbI.yBot + fbI.yTop) / 2, shape.z(s)]];
-        const y = sec[3][1] - 0.03 + k * 0.06;
+        const s = 0.035 + k * 0.012;
+        const y = (fbI.yBot + fbI.yTop) / 2 - 0.03 + k * 0.06;
+        const sec = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [shape.sideX(s, y) + 0.03, y, shape.z(s)]];
         const tri = new THREE.Shape();
         tri.moveTo(0, 0); tri.lineTo(0.11, 0.025); tri.lineTo(0.09, 0.0); tri.lineTo(0, -0.012); tri.closePath();
         const geo = new THREE.ExtrudeGeometry(tri, { depth: 0.006, bevelEnabled: false });

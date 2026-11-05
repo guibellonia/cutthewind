@@ -4,9 +4,11 @@ import type { CarBuild, PaintConfig } from '../core/types';
 import { CARS } from '../data/cars';
 import { visualPart } from '../data/visualParts';
 import { BodyShape, kitParams } from './bodyShape';
-import { ATLAS, buildBodyGeometry, surfacePatch } from './bodyMesh';
+import { ATLAS, buildBodyGeometry, endDecal, mirrorX, projectedPatch } from './bodyMesh';
 import { paintAtlas } from './vinyl';
-import { canvas, carbonTexture, frontBumperTextures, frontFasciaTextures, grilleTexture, headlightTextures, rearBumperTextures, rearFasciaTextures, resolveHeadlight, tex } from './textures';
+import { glassMasks } from './glass';
+import { panelLayout, panelNormalMap } from './panels';
+import { canvas, carbonTexture, frontDecalTextures, headlightBox, headlightTextures, rearDecalTextures, resolveHeadlight, tex } from './textures';
 import { createWheel, type WheelObject } from './wheels';
 import { buildAero, buildExhaust, buildHoodDetails, buildInterior, buildMirrors, buildSpoiler, exhaustKind, tipMaterial, type PartMats } from './carParts';
 
@@ -74,10 +76,9 @@ export class CarVisual {
   readonly shape: BodyShape;
   wheels: { w: WheelObject; side: 1 | -1; front: boolean; x: number; z: number }[] = [];
   private disposables: { dispose(): void }[] = [];
-  private rearMat!: THREE.MeshPhysicalMaterial;
+  private rearMat!: THREE.MeshStandardMaterial;
   private headMats: THREE.MeshStandardMaterial[] = [];
-  private frontCapMat!: THREE.MeshPhysicalMaterial;
-  private fogMat!: THREE.MeshPhysicalMaterial;
+  private fogMat!: THREE.MeshStandardMaterial;
   private neonMesh: THREE.Mesh | null = null;
   private neonLight: THREE.PointLight | null = null;
   private flames: THREE.Mesh[] = [];
@@ -120,9 +121,12 @@ export class CarVisual {
     this.atlasTex = atlas;
 
     const pp = paintMaterialParams(v.paint);
-    const paint = new THREE.MeshPhysicalMaterial({ map: atlas, color: 0xffffff, ...pp, envMapIntensity: 1.25 });
+    const panelN = panelNormalMap(shape, model, v);
+    this.disposables.push(panelN);
+    const gaps = { normalMap: panelN, normalScale: new THREE.Vector2(1, 1), clearcoatNormalMap: panelN, clearcoatNormalScale: new THREE.Vector2(1, 1) };
+    const paint = new THREE.MeshPhysicalMaterial({ map: atlas, color: 0xffffff, ...pp, envMapIntensity: 1.25, ...gaps });
     const partPaint = new THREE.MeshPhysicalMaterial({ color: v.paint.finish === 'carbon' ? 0x222428 : v.paint.color, ...pp, envMapIntensity: 1.25, map: v.paint.finish === 'carbon' ? carbonTexture() : null });
-    const carbonish = new THREE.MeshPhysicalMaterial({ map: atlas, color: 0xffffff, metalness: 0.25, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.03, envMapIntensity: 1.2 });
+    const carbonish = new THREE.MeshPhysicalMaterial({ map: atlas, color: 0xffffff, metalness: 0.25, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.03, envMapIntensity: 1.2, ...gaps });
     const carbon = new THREE.MeshPhysicalMaterial({ map: carbonTexture(), color: 0xffffff, metalness: 0.25, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.03 });
     const black = new THREE.MeshStandardMaterial({ color: 0x0c0d0f, roughness: 0.45, metalness: 0.3 });
     const dark = new THREE.MeshBasicMaterial({ color: 0x030304 });
@@ -137,16 +141,10 @@ export class CarVisual {
 
     const hoodCarbon = !!visualPart('hood', v.hood).p.carbon;
     const roofCarbon = visualPart('roof', v.roof).p.kind === 'carbon';
-    const tint = Math.min(0.9, Math.max(0, v.windowTint));
-    const glass = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(v.tintColor).lerp(new THREE.Color(0x05070a), 0.5), metalness: 0.0, roughness: 0.03,
-      transparent: true, opacity: 0.8 + tint * 0.18, envMapIntensity: 1.1, depthWrite: false, clearcoat: 1, clearcoatRoughness: 0.02,
-    });
-    const pillar = new THREE.MeshPhysicalMaterial({ color: 0x08090a, metalness: 0.2, roughness: 0.15, clearcoat: 1 });
     const under = new THREE.MeshStandardMaterial({ color: 0x0b0b0c, roughness: 0.9 });
-    this.disposables.push(glass, pillar, under);
+    this.disposables.push(under);
 
-    const add = (g: THREE.BufferGeometry | undefined, m: THREE.Material, order = 0) => {
+    const add = (g: THREE.BufferGeometry | undefined | null, m: THREE.Material, order = 0) => {
       if (!g) return;
       const mesh = new THREE.Mesh(g, m);
       mesh.renderOrder = order;
@@ -157,67 +155,75 @@ export class CarVisual {
     add(geo.buckets.top, paint);
     add(geo.buckets.hood, hoodCarbon ? carbonish : paint);
     add(geo.buckets.roof, roofCarbon ? carbonish : paint);
-    add(geo.buckets.pillar, pillar);
     add(geo.buckets.under, under);
-    add(geo.buckets.glass, glass, 2);
 
-    // ---- flares, skirts
+    // ---- glass: overlays with smooth window masks
+    const gm = glassMasks(shape, geo.glassFrame, { tint: v.tintColor, tintAmount: Math.min(0.9, Math.max(0, v.windowTint)), blackPillars: model.shape.blackPillars });
+    const glassParams = { alphaTest: 0.5, roughness: 0.04, metalness: 0.1, clearcoat: 1, clearcoatRoughness: 0.02, envMapIntensity: 1.5, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 };
+    const glassSide = new THREE.MeshPhysicalMaterial({ map: gm.side, ...glassParams });
+    const glassTop = new THREE.MeshPhysicalMaterial({ map: gm.top, ...glassParams });
+    this.disposables.push(gm.side, gm.top, glassSide, glassTop);
+    add(geo.glassSide, glassSide, 1);
+    add(geo.glassTop, glassTop, 1);
+
+    // ---- flares
     add(geo.flares ?? undefined, paint);
-    add(geo.skirts ?? undefined, paint);
 
-    // ---- caps (header panel & tail panel) and bumpers
-    const ft = frontFasciaTextures(model, v, { ...geo.capFInfo, bumperTop: shape.fBumperTop });
+    // ---- wheel-arch lips: a rolled edge that finishes the cut-out and hides the tunnel seam
+    for (const [za, F] of [[shape.zFA, shape.flareF], [shape.zRA, shape.flareR]] as const) {
+      if (F > 0.005) continue;
+      const R = shape.archR + 0.006;
+      const pts: THREE.Vector3[] = [];
+      const yMin = shape.bottom(shape.sOf(za)) + 0.06;
+      const phi0 = Math.asin(Math.max(-0.9, Math.min(0.5, (yMin - shape.wheelY) / R)));
+      for (let k = 0; k <= 40; k++) {
+        const phi = phi0 + ((Math.PI - 2 * phi0) * k) / 40;
+        const z = za + R * Math.cos(phi), y = shape.wheelY + R * Math.sin(phi);
+        pts.push(new THREE.Vector3(shape.outerX(shape.sOf(z), y + 0.01) - 0.006, y, z));
+      }
+      const lip = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 48, 0.011, 6, false);
+      add(lip, partPaint);
+      add(mirrorX(lip), partPaint);
+    }
+
+    // ---- end caps (tiny closing faces at the nose and tail tips)
+    add(geo.capF, paint);
+    add(geo.capR, paint);
+
+    // ---- front & rear end decals: grille, intakes, plates, fogs / taillights, reflectors, exhaust cut-outs
     const exKind = exhaustKind(build, model);
-    const rt = rearFasciaTextures(model, v, { ...geo.capRInfo, bumperTop: shape.rBumperTop });
-    const fbt = frontBumperTextures(model, v, geo.bumperFInfo);
-    const rbt = rearBumperTextures(model, v, geo.bumperRInfo, exKind);
-    this.disposables.push(ft.map, ft.emissive, rt.map, rt.emissive, fbt.map, fbt.emissive, rbt.map, rbt.emissive);
-    this.frontCapMat = new THREE.MeshPhysicalMaterial({ map: ft.map, emissiveMap: ft.emissive, emissive: 0xfff2d8, emissiveIntensity: 1.1, ...pp, envMapIntensity: 1.1 });
-    this.rearMat = new THREE.MeshPhysicalMaterial({ map: rt.map, emissiveMap: rt.emissive, emissive: 0xff2020, emissiveIntensity: 0.9, ...pp, envMapIntensity: 1.1 });
-    const fbMat = new THREE.MeshPhysicalMaterial({ map: fbt.map, emissiveMap: fbt.emissive, emissive: 0xfff2d8, emissiveIntensity: 1.0, ...pp, envMapIntensity: 1.2 });
-    const rbMat = new THREE.MeshPhysicalMaterial({ map: rbt.map, emissiveMap: rbt.emissive, emissive: 0xff3030, emissiveIntensity: 0.6, ...pp, envMapIntensity: 1.2 });
-    this.fogMat = fbMat;
-    this.disposables.push(this.frontCapMat, this.rearMat, fbMat, rbMat);
-    add(geo.capF, this.frontCapMat);
-    add(geo.capR, this.rearMat);
-    add(geo.bumperF, fbMat);
-    add(geo.bumperR, rbMat);
+    const exBaseR = (visualPart('exhaust', v.exhaust).p.r as number | undefined) ?? 0.04;
+    const fd = endDecal(shape, true), rd = endDecal(shape, false);
+    const ft = frontDecalTextures(model, v, shape, fd);
+    const rt = rearDecalTextures(model, v, shape, rd, exKind, { wc: geo.rearInfo.wc, yBot: geo.rearInfo.yBot, r: exBaseR });
+    this.disposables.push(ft.map, ft.emissive, rt.map, rt.emissive);
+    const decal = { alphaTest: 0.5, roughness: 0.38, metalness: 0.25, emissive: 0xffffff, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 };
+    this.fogMat = new THREE.MeshStandardMaterial({ map: ft.map, emissiveMap: ft.emissive, emissiveIntensity: 1.0, ...decal });
+    this.rearMat = new THREE.MeshStandardMaterial({ map: rt.map, emissiveMap: rt.emissive, emissiveIntensity: 0.9, ...decal });
+    this.disposables.push(this.fogMat, this.rearMat);
+    add(fd.geo, this.fogMat, 1);
+    add(rd.geo, this.rearMat, 1);
 
-    // ---- headlights & grille on the sloped nose (corner-mount styles)
-    const sh = model.shape;
-    if (sh.lightMount === 'corner') {
-      const style = resolveHeadlight(model, v);
-      const ht = headlightTextures(style);
-      const hm = new THREE.MeshStandardMaterial({ map: ht.map, emissiveMap: ht.emissive, emissive: 0xfff4dc, emissiveIntensity: 1.3, transparent: true, alphaTest: 0.35, roughness: 0.08, metalness: 0.3 });
+    // ---- headlights, projected along the local face normal so they wrap the nose corners
+    {
+      const ht = headlightTextures(resolveHeadlight(model, v));
+      const hm = new THREE.MeshStandardMaterial({ map: ht.map, emissiveMap: ht.emissive, emissive: 0xfff4dc, emissiveIntensity: 1.3, alphaTest: 0.35, roughness: 0.08, metalness: 0.3, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
       this.headMats.push(hm);
       this.disposables.push(hm);
-      const s0 = 0.006, s1 = style === 'slimRect' || style === 'ledStrip' ? 0.04 : style === 'quadRound' || style === 'sealedRect' ? 0.06 : 0.05;
-      const xsAt = (s: number) => shape.section(s)[6][0];
-      for (const sx of [1, -1]) {
-        const fn = (u: number, w: number) => {
-          const s = s0 + (s1 - s0) * w;
-          const xs = xsAt(s);
-          const x = xs * (0.5 + 0.49 * u);
-          const p = shape.topPoint(s, x);
-          return [sx * p[0], p[1], p[2]];
-        };
-        const g = surfacePatch(fn, 10, 5, 0.006, [sx * 0.3, 0.5, 1]);
-        this.body.add(new THREE.Mesh(g, hm));
-        this.disposables.push(g);
-      }
-      const gt = grilleTexture(model);
-      const gm = new THREE.MeshStandardMaterial({ map: gt, transparent: true, alphaTest: 0.3, roughness: 0.5, metalness: 0.3 });
-      this.disposables.push(gt, gm);
-      const gfn = (u: number, w: number) => {
-        const s = 0.004 + 0.034 * w;
-        const xs = xsAt(s);
-        const x = (u - 0.5) * 2 * xs * 0.46;
-        const p = shape.topPoint(s, Math.abs(x));
-        return [Math.sign(x) * p[0], p[1], p[2]];
-      };
-      const gg = surfacePatch(gfn, 12, 4, 0.004, [0, 0.4, 1]);
-      this.body.add(new THREE.Mesh(gg, gm));
-      this.disposables.push(gg);
+      const hb = headlightBox(shape, model, v);
+      const w = hb.xo - hb.xi, xc = (hb.xi + hb.xo) / 2;
+      const n = [0, 0, 0];
+      for (const f of [0.2, 0.5, 0.8]) { const nn = shape.faceNormal(hb.xi + w * f, hb.yc, true); n[0] += nn[0]; n[1] += nn[1]; n[2] += nn[2]; }
+      n[0] = Math.min(0.5, Math.max(0, n[0] / 3)); n[1] = Math.min(0.6, Math.max(0, n[1] / 3)); n[2] = Math.max(0.5, n[2] / 3);
+      const nl = Math.hypot(n[0], n[1], n[2]);
+      for (let k = 0; k < 3; k++) n[k] /= nl;
+      const zc = shape.endZ(xc, hb.yc, true, 0.3);
+      const C = [xc, hb.yc, isNaN(zc) ? shape.zF - 0.15 : zc];
+      const U = new THREE.Vector3(0, 1, 0).cross(new THREE.Vector3(n[0], n[1], n[2])).normalize();
+      const Vv = new THREE.Vector3(n[0], n[1], n[2]).cross(U).normalize();
+      const g = projectedPatch(shape, C, n, U.toArray(), Vv.toArray(), w, hb.h, 18, 8, 0.004);
+      add(g, hm, 1);
+      add(mirrorX(g), hm, 1);
     }
 
     // ---- wheel wells & floor
@@ -248,10 +254,10 @@ export class CarVisual {
     if (spoiler) this.body.add(spoiler);
     this.body.add(buildHoodDetails(shape, build, model, mats));
     this.body.add(buildMirrors(shape, build, mats));
-    const ex = buildExhaust(shape, build, model, mats, geo.bumperRInfo);
+    const ex = buildExhaust(shape, build, model, mats, geo.rearInfo);
     this.body.add(ex.group);
-    this.body.add(buildAero(shape, build, mats, geo.bumperFInfo, geo.bumperRInfo));
-    if (opts.interior !== false) this.body.add(buildInterior(shape, model, v.interior, mats));
+    this.body.add(buildAero(shape, build, mats, geo.frontInfo, geo.rearInfo));
+    if (opts.interior) this.body.add(buildInterior(shape, model, v.interior, mats));
 
     // nitro / backfire flames
     const flameMat = new THREE.MeshBasicMaterial({ color: 0x6aa8ff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
@@ -333,7 +339,6 @@ export class CarVisual {
   setLights(on: boolean) {
     this.lightsOn = on;
     for (const m of this.headMats) m.emissiveIntensity = on ? 1.3 : 0.05;
-    this.frontCapMat.emissiveIntensity = on ? 1.1 : 0.05;
     this.fogMat.emissiveIntensity = on ? 1.0 : 0.05;
     for (const b of this.beams) b.visible = on;
   }
