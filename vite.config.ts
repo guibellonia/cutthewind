@@ -7,4 +7,6 @@ export default defineConfig({
     chunkSizeWarningLimit: 2000,
   },
   server: { host: true },
+  resolve: { dedupe: ['three'] },
+  optimizeDeps: { include: ['three'] },
 });

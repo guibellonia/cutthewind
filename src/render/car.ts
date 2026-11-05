@@ -292,7 +292,7 @@ export class CarVisual {
     }
     // ---- headlight beams on the ground
     if (opts.beams) {
-      const bm = new THREE.MeshBasicMaterial({ map: radialGlowTexture('beam'), color: 0xfff1d0, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false });
+      const bm = new THREE.MeshBasicMaterial({ map: radialGlowTexture('beam'), color: 0xfff1d0, transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending, depthWrite: false });
       for (const sx of [-1, 1]) {
         const plane = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 9), bm);
         plane.rotation.x = -Math.PI / 2;

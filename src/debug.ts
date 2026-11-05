@@ -4,10 +4,49 @@ import { blackoutBuild, blueHourBuild, stockBuild } from './core/builds';
 import { CAR_LIST } from './data/cars';
 import { CarVisual } from './render/car';
 import { Renderer } from './render/renderer';
+import { GarageScene } from './render/garageScene';
+import { LANE_X, StripScene } from './render/stripScene';
 
 export function runDebug(params: URLSearchParams) {
   const canvas = document.getElementById('gl') as HTMLCanvasElement;
-  const r = new Renderer(canvas, { quality: 'high', retro: 0.0, bloom: true, reflections: false });
+  const r = new Renderer(canvas, { quality: 'high', retro: 0.25, bloom: true, reflections: params.get('refl') !== '0' });
+  if (params.get('debug') === 'garage') {
+    const g = new GarageScene(r, (params.get('theme') as any) ?? 'home');
+    g.setCar(params.get('build') === 'blackout' ? blackoutBuild() : blueHourBuild());
+    g.focus((params.get('focus') as any) ?? 'overview');
+    g.attachControls(canvas);
+    r.setView(g.scene, g.camera);
+    let last = performance.now();
+    const loop = () => { const now = performance.now(); const dt = Math.min(0.05, (now - last) / 1000); last = now; g.update(dt); r.render(dt); requestAnimationFrame(loop); };
+    loop();
+    return;
+  }
+  if (params.get('debug') === 'strip') {
+    const st = new StripScene(r, params.get('venue') ?? 'pier9', 402.336, { meet: params.get('meet') === '1' });
+    const p = new CarVisual(blueHourBuild(), { beams: true });
+    const rv = new CarVisual(blackoutBuild(), { beams: true });
+    const z = Number(params.get('z') ?? 0);
+    p.root.position.set(LANE_X.player, 0, z - p.shape.zF);
+    rv.root.position.set(LANE_X.rival, 0, z - rv.shape.zF);
+    st.scene.add(p.root, rv.root);
+    const cam = st.camera;
+    const view = params.get('cam') ?? 'chase';
+    if (view === 'chase') { cam.position.set(LANE_X.player, 1.6, z - 8.5); cam.lookAt(LANE_X.player * 0.5, 0.9, z + 8); }
+    else if (view === 'front') { cam.position.set(0, 1.4, z + 9); cam.lookAt(0, 0.7, z - 2); }
+    else { cam.position.set(-6, 2.2, z + 6); cam.lookAt(0, 0.8, z - 2); }
+    st.setTree('player', { pre: true, stage: true, amber: 3, green: false, red: false });
+    st.setTree('rival', { pre: true, stage: true, amber: 3, green: false, red: false });
+    r.setView(st.scene, cam);
+    let last = performance.now();
+    const loop = () => {
+      const now = performance.now(); const dt = Math.min(0.05, (now - last) / 1000); last = now;
+      st.updateCarLights([p.root.position, rv.root.position]);
+      for (const c of [p, rv]) c.update(dt, { speed: 0, accel: 0, braking: false, rpm: 3000, redline: 7000, nitro: false, throttle: 0.4 });
+      r.render(dt); requestAnimationFrame(loop);
+    };
+    loop();
+    return;
+  }
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x4a505a);
   scene.environment = r.nightEnv('studio', { sky: 0x6a7280, ground: 0x2a2c30, lights: [0xffffff, 0xd0e0ff, 0xffe8d0, 0xffffff], strips: 8 });
