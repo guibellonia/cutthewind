@@ -20,12 +20,23 @@ export function topBar(game: Game, title: string, onBack?: () => void): HTMLElem
     h('div', { style: { fontSize: '22px', color: 'var(--cyan2)' } }, '// ' + title),
     h('div', { class: 'grow' }),
     p ? [
-      h('div', { class: 'stat' }, h('small', {}, 'Day'), h('span', {}, String(p.day))),
-      h('div', { class: 'stat' }, h('small', {}, 'Tier'), h('span', {}, TIERS[unlockedTier(p)].name)),
-      h('div', { class: 'stat' }, h('small', {}, 'Rep'), h('span', { class: 'rep' }, p.rep.toLocaleString('en-US'))),
-      h('div', { class: 'stat' }, h('small', {}, 'Cash'), h('span', { class: 'money' }, fmtMoney(p.money))),
+      h('div', { class: 'stat' }, h('small', {}, 'Day'), h('span', { 'data-stat': 'day' }, String(p.day))),
+      h('div', { class: 'stat' }, h('small', {}, 'Tier'), h('span', { 'data-stat': 'tier' }, TIERS[unlockedTier(p)].name)),
+      h('div', { class: 'stat' }, h('small', {}, 'Rep'), h('span', { class: 'rep', 'data-stat': 'rep' }, p.rep.toLocaleString('en-US'))),
+      h('div', { class: 'stat' }, h('small', {}, 'Cash'), h('span', { class: 'money', 'data-stat': 'cash' }, fmtMoney(p.money))),
     ] : null,
   );
+}
+
+/** Refresh the day / tier / rep / cash read-outs of any top bar on screen (called after every save). */
+export function refreshTopBar(game: Game) {
+  const p = game.profile;
+  if (!p) return;
+  const set = (k: string, v: string) => game.ui.querySelectorAll<HTMLElement>(`[data-stat="${k}"]`).forEach((el) => { if (el.textContent !== v) el.textContent = v; });
+  set('day', String(p.day));
+  set('tier', TIERS[unlockedTier(p)].name);
+  set('rep', p.rep.toLocaleString('en-US'));
+  set('cash', fmtMoney(p.money));
 }
 
 export function brandLogo(brandOrId: string, size = 40): HTMLCanvasElement {

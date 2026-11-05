@@ -5,6 +5,7 @@ import { GarageScene, type GarageTheme } from '../render/garageScene';
 import { loadProfile, loadSettings, saveProfile, saveSettings, type Profile, type Settings } from '../core/state';
 import { audio } from '../audio/audio';
 import { clear } from '../ui/dom';
+import { refreshTopBar } from '../ui/common';
 import { ensureDay } from './progression';
 
 export interface Screen {
@@ -88,6 +89,7 @@ export class Game {
     if (this.profile) {
       ensureDay(this.profile);
       saveProfile(this.profile);
+      refreshTopBar(this);
     }
   }
 

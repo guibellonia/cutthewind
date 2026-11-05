@@ -13,7 +13,7 @@ import { REGIONS, paintAtlas } from '../../render/vinyl';
 import { ATLAS } from '../../render/bodyMesh';
 import type { FocusPreset, GarageScene } from '../../render/garageScene';
 import { audio } from '../../audio/audio';
-import { btn, colorInput, confirmBox, h, select, slider, toast } from '../dom';
+import { btn, colorInput, confirmBox, h, select, slider, toast, append } from '../dom';
 import { statsPanel, topBar } from '../common';
 import { HubScreen } from './hub';
 
@@ -201,7 +201,7 @@ export class BodyShopScreen implements Screen {
     body.append(h('h3', {}, 'Fitment'));
     const diam = model.stockWheelSize * 25.4 + (2 * model.stockTireWidth * model.stockTireProfile) / 100;
     const keepDiam = () => { w.profile = Math.max(25, Math.min(65, Math.round(((diam - w.size * 25.4) / 2 / w.tireWidth) * 100 / 5) * 5)); };
-    body.append(
+    append(body, [
       slider('Rim size', 15, 20, 1, w.size, (v) => { w.size = v; keepDiam(); this.changed(); }, (v) => `${v}"`),
       slider('Rim width', 6, 11.5, 0.5, w.width, (v) => { w.width = v; this.changed(); }, (v) => `${v}J`),
       slider('Tyre width', 185, 315, 10, w.tireWidth, (v) => { w.tireWidth = v; keepDiam(); this.changed(); }, (v) => `${v} mm`),
@@ -212,19 +212,19 @@ export class BodyShopScreen implements Screen {
       select('Finish', WHEEL_FINISHES.map((f) => ({ value: f.id, label: f.name })), w.finish, (v) => { w.finish = v; this.changed(); this.renderLeft(); }),
       w.finish === 'painted' ? colorInput('Wheel colour', w.color, (v) => { w.color = v; this.changed(); }, PAINT_SWATCHES) : null,
       colorInput('Calipers', this.draft.visual.caliperColor, (v) => { this.draft.visual.caliperColor = v; this.changed(); }, ['#b8b8b8', '#c1121f', '#f2c230', '#1f6fd1', '#111111', '#ff6a00', '#40ff90']),
-    );
+      ]);
   }
 
   private paintTab(body: HTMLElement) {
     const pt = this.draft.visual.paint;
     const fins: PaintFinish[] = ['solid', 'metallic', 'pearl', 'matte', 'candy', 'chrome', 'carbon'];
-    body.append(
+    append(body, [
       h('h3', {}, 'Body paint'),
       h('div', { class: 'tabs' }, fins.map((f) => h('div', { class: `tab ${pt.finish === f ? 'sel' : ''}`, onClick: () => { pt.finish = f; this.changed(); this.renderLeft(); } }, `${f} ${fmtMoney(FINISH_COST[f])}`))),
       colorInput('Colour', pt.color, (v) => { pt.color = v; this.changed(false); }, PAINT_SWATCHES),
       pt.finish === 'pearl' ? colorInput('Pearl flip', pt.pearl, (v) => { pt.pearl = v; this.changed(); }, ['#ffffff', '#7fd0ff', '#ff7fd0', '#d0ff7f', '#ffd27f', '#b07fff']) : null,
       h('p', { class: 'dim', style: { fontSize: '12px' } }, 'Paint names from the catalogue: Midnight Indigo Metallic (#1C2154), Obsidian Graphite (#24262B), Pier Fog Silver, Kestrel Yellow… or mix your own.'),
-    );
+      ]);
   }
 
   private neonTab(body: HTMLElement) {

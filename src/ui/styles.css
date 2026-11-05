@@ -218,7 +218,7 @@ input[type=color] { width: 44px; height: 28px; border: 1px solid var(--line); ba
 .touchpad button { position: absolute; bottom: 30px; width: 96px; height: 96px; border-radius: 50%; border: 2px solid var(--cyan); background: rgba(0, 30, 50, 0.55); color: #fff;
   font-family: var(--font); font-weight: 900; font-size: 18px; pointer-events: auto; touch-action: none; }
 .rival-card { position: absolute; right: 40px; top: 110px; width: 360px; }
-.results { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(820px, 94vw); }
+.results { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(820px, 94vw); max-height: calc(100vh - 20px); overflow-y: auto; }
 .results table { width: 100%; border-collapse: collapse; font-family: var(--font); font-size: 18px; }
 .results td, .results th { padding: 5px 8px; text-align: right; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
 .results th { color: var(--dim); font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase; }
@@ -243,4 +243,15 @@ input[type=color] { width: 44px; height: 28px; border: 1px solid var(--line); ba
   .shop-right { display: none; }
   .shop-bottom { left: 16px; right: 16px; }
   .menu .btn { min-width: 220px; font-size: 22px; }
+}
+
+/* compact layouts for short / narrow windows */
+@media (max-height: 640px) {
+  .results table { font-size: 15px; }
+  .results td, .results th { padding: 3px 8px; }
+  .results .banner { font-size: 44px; }
+  .hud .keys { top: 56px; font-size: 11px; }
+}
+@media (max-width: 1100px) {
+  .hud .keys { top: 56px; }
 }
