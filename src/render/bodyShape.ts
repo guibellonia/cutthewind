@@ -4,6 +4,7 @@
 // flares and skirts. This class provides the shared geometric description all parts are built from.
 import type { CarModel, ShapeParams, VisualConfig } from '../core/types';
 import { visualPart } from '../data/visualParts';
+import { monotoneCurve } from '../sim/vehicle';
 
 export const SEC_N = 13; // points per half section of the lower body
 export const P_SHOULDER = 6;
@@ -62,9 +63,9 @@ export class BodyShape {
   readonly rBumperTop: number;
   readonly sArchFront: number; // s at the front edge of the front arch
   readonly sArchRear: number; // s at the rear edge of the rear arch
-  private sA: number;
-  private yA: number;
-  private yBr: number;
+  /** centreline top profile (nose → hood → windshield → roof → rear glass → deck → tail) */
+  readonly prof: (s: number) => number;
+  readonly H: number;
 
   constructor(model: CarModel, kit: KitParams) {
     this.m = model;
@@ -83,15 +84,46 @@ export class BodyShape {
     this.flareF = Math.max(0.012, sh.fenderF + kit.flareF);
     this.flareR = Math.max(0.012, sh.fenderR + kit.flareR);
     this.w0 = this.W / 2 - Math.max(sh.fenderF, sh.fenderR, 0.012) - 0.004;
-    this.hoodStart = Math.max(0.035, sh.noseRound * 0.55);
-    this.sA = Math.max(0.09, sh.noseRound * 1.25);
-    this.yA = sh.beltF;
-    this.yBr = sh.deckH - this.deckCrown;
-    this.hoodCrown = 0.04;
-    this.hoodCrown = Math.min(0.07, Math.max(0.018, sh.hoodH - this.beltRaw(sh.wsBase)));
+    this.hoodStart = Math.max(0.035, sh.noseRound * 0.45);
+    this.H = model.height;
+    this.hoodCrown = Math.max(0.035, Math.min(0.07, sh.hoodCrown + 0.015));
+    // Longitudinal centreline profile. Landmark shape follows the median of 28 real sedans/coupes
+    // (ShapeNetCar reference set), warped to each model's stations and heights.
+    {
+      const H = this.H;
+      const ws = sh.wsBase, rs = sh.roofStart, re = sh.roofEnd, rg = sh.rearGlassBase;
+      const hatch = rg > 0.93;
+      const nose = sh.noseH, hood = sh.hoodH, roof = sh.roofH, deck = sh.deckH, tail = sh.tailH;
+      const flatNose = sh.frontTaper > 0.62;
+      const hf = nose + (hood - nose) * (flatNose ? 0.45 : 0.57);
+      const d = rs - ws, r = roof - hood, g = rg - re;
+      const reY = roof - 0.03 * H;
+      const pts: [number, number][] = [
+        [0, nose],
+        [0.016, nose + (hf - nose) * (flatNose ? 0.55 : 0.3)],
+        [0.038, nose + (hf - nose) * (flatNose ? 0.92 : 0.74)],
+        [0.065, hf],
+        [ws, hood],
+        [ws + 0.25 * d, hood + 0.26 * r],
+        [ws + 0.5 * d, hood + 0.54 * r],
+        [ws + 0.78 * d, hood + 0.86 * r],
+        [rs, roof - 0.012 * H],
+        [rs + 0.42 * (re - rs), roof],
+        [re, reY],
+      ];
+      if (hatch) {
+        pts.push([re + 0.45 * g, reY + (deck - reY) * 0.38], [rg, deck], [1, deck - 0.07 * H]);
+      } else {
+        pts.push([re + 0.35 * g, reY + (deck - reY) * 0.3], [re + 0.7 * g, reY + (deck - reY) * 0.7], [rg, deck]);
+        pts.push([rg + (0.97 - rg) * 0.55, deck - (deck - tail) * 0.55], [0.97, tail], [0.99, tail - 0.07 * H], [1, tail - 0.13 * H]);
+      }
+      for (let i = 1; i < pts.length; i++) if (pts[i][0] <= pts[i - 1][0]) pts[i][0] = pts[i - 1][0] + 0.003;
+      this.prof = monotoneCurve(pts.map((p) => p[0]), pts.map((p) => p[1]));
+    }
     const faceLights = sh.lightMount === 'face';
-    this.fBumperTop = sh.noseH - (faceLights ? 0.2 : 0.13);
-    this.rBumperTop = sh.sill + 0.1 + (sh.tailH - sh.sill - 0.1) * 0.4;
+    this.fBumperTop = sh.noseH - (faceLights ? 0.2 : 0.055);
+    const tailTip = this.prof(1);
+    this.rBumperTop = sh.sill + 0.16 + (tailTip - sh.sill - 0.16) * 0.42;
     this.sArchFront = this.sOf(this.zFA + this.archR + 0.03);
     this.sArchRear = this.sOf(this.zRA - this.archR - 0.03);
   }
@@ -102,62 +134,58 @@ export class BodyShape {
   plan(s: number): number {
     const sh = this.sh;
     let f = 1;
-    const p = 2.4;
     if (s < sh.noseRound) {
       const u = 1 - s / sh.noseRound;
-      f = sh.frontTaper + (1 - sh.frontTaper) * Math.pow(Math.max(0, 1 - Math.pow(u, p)), 1 / p);
+      f = sh.frontTaper + (1 - sh.frontTaper) * (1 - u * u);
     } else if (s > 1 - sh.tailRound) {
       const u = 1 - (1 - s) / sh.tailRound;
-      f = sh.rearTaper + (1 - sh.rearTaper) * Math.pow(Math.max(0, 1 - Math.pow(u, p)), 1 / p);
+      f = sh.rearTaper + (1 - sh.rearTaper) * (1 - u * u);
     }
-    f *= 1 - 0.025 * clamp01((0.35 - s) / 0.35);
+    // subtle "coke bottle": fuller over the front fenders and rear haunches
+    const z = this.z(s);
+    const hump = (za: number, span: number) => Math.max(0, 1 - ((z - za) / span) ** 2);
+    f *= 0.975 + 0.025 * Math.max(hump(this.zFA, 0.9), hump(this.zRA, 1.1));
     return f;
   }
 
   halfWidth(s: number) { return this.w0 * this.plan(s); }
 
-  private beltRaw(s: number): number {
+  /** Shoulder (beltline) height. */
+  belt(s: number): number {
     const sh = this.sh;
-    const sA = this.sA, sB = sh.rearGlassBase;
-    const slope = (this.yBr - this.yA) / Math.max(0.2, sB - sA);
-    if (s <= sA) {
-      const t = s / sA;
-      const y0 = sh.noseH - 0.03;
-      return y0 + (this.yA - y0) * (1 - (1 - t) * (1 - t));
+    const ws = sh.wsBase, rg = sh.rearGlassBase;
+    let y: number;
+    if (s <= ws) {
+      const k = sstep(0, 0.09, s);
+      y = this.prof(s) - this.hoodCrown * k - 0.014 * (1 - k);
+    } else if (s >= rg) {
+      y = this.prof(s) - this.deckCrown * (1 - 0.5 * sstep(0.95, 1, s));
+    } else {
+      const b0 = this.prof(ws) - this.hoodCrown, b1 = this.prof(rg) - this.deckCrown;
+      y = lerp(b0, b1, (s - ws) / (rg - ws));
     }
-    if (s <= sB) return this.yA + slope * (s - sA);
-    let y = this.yBr + slope * 0.25 * (s - sB);
-    const sT = 1 - sh.tailRound * 1.4;
-    if (s > sT) {
-      const t = (s - sT) / (1 - sT);
-      y -= Math.max(0.055, this.yBr - (sh.tailH - this.deckCrown)) * t * t;
-    }
+    if (this.k.duck > 0) y += this.k.duck * sstep(0.88, 0.995, s);
     return y;
   }
 
-  /** Shoulder (beltline) height. */
-  belt(s: number): number {
-    let y = this.beltRaw(s);
-    if (this.k.duck > 0) y += this.k.duck * sstep(0.88, 0.995, s);
+  /** Top surface centreline (lower body). Under the cabin it sits just above the beltline. */
+  top(s: number): number {
+    const sh = this.sh;
+    let y: number;
+    if (s <= sh.wsBase || s >= sh.rearGlassBase) y = this.prof(s);
+    else y = this.belt(s) + this.cabinCrown;
+    if (this.k.duck > 0 && s > sh.rearGlassBase) y += this.k.duck * sstep(0.88, 0.995, s);
     return y;
   }
 
   /** Crown of the top surface above the shoulder line. */
   crown(s: number): number {
-    const sh = this.sh;
-    const hood = this.hoodCrown * sstep(0.0, this.sA, s);
-    const tCab = sstep(sh.wsBase - 0.025, sh.wsBase + 0.005, s);
-    const tDeck = sstep(sh.rearGlassBase - 0.005, sh.rearGlassBase + 0.025, s);
-    let c = lerp(hood, this.cabinCrown, tCab);
-    c = lerp(c, this.deckCrown * (1 - 0.6 * sstep(1 - sh.tailRound, 1, s)), tDeck);
-    return c;
+    return Math.max(0.006, this.top(s) - this.belt(s));
   }
-
-  top(s: number) { return this.belt(s) + this.crown(s); }
 
   bottom(s: number): number {
     const sh = this.sh;
-    let y = sh.sill + 0.06 * (1 - sstep(0.0, 0.08, s)) + 0.1 * sstep(0.9, 1.0, s);
+    let y = sh.sill + 0.06 * (1 - sstep(0.0, 0.08, s)) + 0.17 * sstep(0.88, 1.0, s) ** 1.4;
     const z = this.z(s);
     for (const za of [this.zFA, this.zRA]) {
       const R = this.archR;
@@ -235,25 +263,7 @@ export class BodyShape {
   // ------------------------------------------------------------------ cabin
   /** Cabin centreline height (windshield / roof / rear glass), for s in [wsBase, rearGlassBase]. */
   cabinTop(s: number): number {
-    const sh = this.sh;
-    const ws = sh.wsBase, rs = sh.roofStart, re = sh.roofEnd, rg = sh.rearGlassBase;
-    const base0 = this.top(ws) + 0.004;
-    const base1 = this.top(rg) + 0.004;
-    if (s <= ws) return base0;
-    if (s < rs) {
-      const t = (s - ws) / (rs - ws);
-      return base0 + (sh.roofH - base0) * (1 - Math.pow(1 - t, 1.55));
-    }
-    if (s <= re) {
-      const t = (s - rs) / Math.max(1e-4, re - rs);
-      return sh.roofH + 0.007 * Math.sin(Math.PI * t) - 0.004 * t;
-    }
-    if (s < rg) {
-      const t = (s - re) / (rg - re);
-      const fast = rg - re > 0.16 ? 1.25 : 1.6;
-      return sh.roofH - 0.004 + (base1 - sh.roofH + 0.004) * Math.pow(t, fast);
-    }
-    return base1;
+    return Math.max(this.prof(s), this.belt(s) + this.cabinCrown + 0.004);
   }
 
   /** Cabin window-sill line (inset from the shoulder). */

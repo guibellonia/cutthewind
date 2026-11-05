@@ -358,6 +358,29 @@ export function exhaustLayout(kind: string, wc: number): { x: number; r: number;
   }
 }
 
+/** Grille panel for the sloped nose between the headlights (alpha outside the grille). */
+export function grilleTexture(model: CarModel): THREE.CanvasTexture {
+  const W = 512, H = 128;
+  const [c, ctx] = canvas(W, H);
+  ctx.clearRect(0, 0, W, H);
+  const sh = model.shape;
+  const X = (f: number) => W / 2 + f * (W / 2);
+  const Y = (f: number) => H * (1 - f);
+  const dark = darkFn(ctx, X, Y);
+  switch (sh.grille) {
+    case 'smallRect': dark(-0.32, 0.18, 0.32, 0.8, 'bars', 8); break;
+    case 'largeTwinIntake': dark(-0.72, 0.08, -0.06, 0.92, 'bars', 14); dark(0.06, 0.08, 0.72, 0.92, 'bars', 14); break;
+    case 'smile': dark(-0.6, 0.1, 0.6, 0.55, 'mesh', 26); break;
+    case 'barGrille': dark(-0.8, 0.15, 0.8, 0.85, 'bars', 8); break;
+    case 'exoticMouth': dark(-0.4, 0.1, 0.4, 0.3, 'mesh', 10); break;
+    case 'muscleWide': dark(-0.95, 0.1, 0.95, 0.9, 'bars', 8); break;
+    case 'honeycombSplit': dark(-0.8, 0.12, -0.08, 0.86, 'honey', 8); dark(0.08, 0.12, 0.8, 0.86, 'honey', 8); break;
+    case 'slot': dark(-0.7, 0.3, 0.7, 0.6, 'bars', 6); break;
+  }
+  drawLogo(ctx, model.brand, X(0), Y(sh.grille === 'smile' || sh.grille === 'exoticMouth' ? 0.72 : sh.grille === 'slot' ? 0.82 : 0.5), H * 0.42);
+  return tex(c);
+}
+
 export interface BumperLayout { len: number; faceA: number; faceB: number; yBot: number; yTop: number; wc: number }
 
 /** Front bumper skin: intakes, plate, fog lights, lip. u runs around the bumper. */

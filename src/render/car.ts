@@ -6,7 +6,7 @@ import { visualPart } from '../data/visualParts';
 import { BodyShape, kitParams } from './bodyShape';
 import { ATLAS, buildBodyGeometry, surfacePatch } from './bodyMesh';
 import { paintAtlas } from './vinyl';
-import { canvas, carbonTexture, frontBumperTextures, frontFasciaTextures, headlightTextures, rearBumperTextures, rearFasciaTextures, resolveHeadlight, tex } from './textures';
+import { canvas, carbonTexture, frontBumperTextures, frontFasciaTextures, grilleTexture, headlightTextures, rearBumperTextures, rearFasciaTextures, resolveHeadlight, tex } from './textures';
 import { createWheel, type WheelObject } from './wheels';
 import { buildAero, buildExhaust, buildHoodDetails, buildInterior, buildMirrors, buildSpoiler, exhaustKind, tipMaterial, type PartMats } from './carParts';
 
@@ -87,6 +87,14 @@ export class CarVisual {
   private pitch = 0;
   private backfire = 0;
   readonly rideHeight: number;
+  private atlasCtx!: CanvasRenderingContext2D;
+  private atlasTex!: THREE.CanvasTexture;
+
+  /** Repaints the body atlas (paint colour, carbon panels, vinyl layers) without rebuilding geometry. */
+  repaint(v = this.build.visual) {
+    paintAtlas(this.atlasCtx, CARS[this.build.modelId], v, this.shape);
+    this.atlasTex.needsUpdate = true;
+  }
   lightsOn = true;
   readonly length: number;
   readonly width: number;
@@ -108,6 +116,8 @@ export class CarVisual {
     const atlas = tex(atlasC);
     atlas.anisotropy = 8;
     this.disposables.push(atlas);
+    this.atlasCtx = atlasCtx;
+    this.atlasTex = atlas;
 
     const pp = paintMaterialParams(v.paint);
     const paint = new THREE.MeshPhysicalMaterial({ map: atlas, color: 0xffffff, ...pp, envMapIntensity: 1.25 });
@@ -173,7 +183,7 @@ export class CarVisual {
     add(geo.bumperF, fbMat);
     add(geo.bumperR, rbMat);
 
-    // ---- corner headlights (conform to the nose corner between bumper and hood line)
+    // ---- headlights & grille on the sloped nose (corner-mount styles)
     const sh = model.shape;
     if (sh.lightMount === 'corner') {
       const style = resolveHeadlight(model, v);
@@ -181,19 +191,33 @@ export class CarVisual {
       const hm = new THREE.MeshStandardMaterial({ map: ht.map, emissiveMap: ht.emissive, emissive: 0xfff4dc, emissiveIntensity: 1.3, transparent: true, alphaTest: 0.35, roughness: 0.08, metalness: 0.3 });
       this.headMats.push(hm);
       this.disposables.push(hm);
-      const sA = 0.002, sB = Math.min(sh.noseRound * 1.05, 0.1);
+      const s0 = 0.006, s1 = style === 'slimRect' || style === 'ledStrip' ? 0.04 : style === 'quadRound' || style === 'sealedRect' ? 0.06 : 0.05;
+      const xsAt = (s: number) => shape.section(s)[6][0];
       for (const sx of [1, -1]) {
         const fn = (u: number, w: number) => {
-          const s = sA + (sB - sA) * u;
-          const y0 = shape.fBumperTop + 0.012;
-          const y1 = Math.max(y0 + 0.05, shape.belt(s) - 0.006);
-          const y = y0 + (y1 - y0) * w;
-          return [sx * shape.sideX(s, y), y, shape.z(s)];
+          const s = s0 + (s1 - s0) * w;
+          const xs = xsAt(s);
+          const x = xs * (0.5 + 0.49 * u);
+          const p = shape.topPoint(s, x);
+          return [sx * p[0], p[1], p[2]];
         };
-        const g = surfacePatch(fn, 12, 4, 0.006, [sx * 0.5, 0.1, 1]);
+        const g = surfacePatch(fn, 10, 5, 0.006, [sx * 0.3, 0.5, 1]);
         this.body.add(new THREE.Mesh(g, hm));
         this.disposables.push(g);
       }
+      const gt = grilleTexture(model);
+      const gm = new THREE.MeshStandardMaterial({ map: gt, transparent: true, alphaTest: 0.3, roughness: 0.5, metalness: 0.3 });
+      this.disposables.push(gt, gm);
+      const gfn = (u: number, w: number) => {
+        const s = 0.004 + 0.034 * w;
+        const xs = xsAt(s);
+        const x = (u - 0.5) * 2 * xs * 0.46;
+        const p = shape.topPoint(s, Math.abs(x));
+        return [Math.sign(x) * p[0], p[1], p[2]];
+      };
+      const gg = surfacePatch(gfn, 12, 4, 0.004, [0, 0.4, 1]);
+      this.body.add(new THREE.Mesh(gg, gm));
+      this.disposables.push(gg);
     }
 
     // ---- wheel wells & floor

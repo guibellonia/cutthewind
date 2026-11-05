@@ -9,7 +9,7 @@ import { LANE_X, StripScene } from './render/stripScene';
 
 export function runDebug(params: URLSearchParams) {
   const canvas = document.getElementById('gl') as HTMLCanvasElement;
-  const r = new Renderer(canvas, { quality: 'high', retro: 0.25, bloom: true, reflections: params.get('refl') !== '0' });
+  const r = new Renderer(canvas, { quality: 'high', retro: 0.25, bloom: params.get('bloom') !== '0', reflections: params.get('refl') !== '0' });
   if (params.get('debug') === 'garage') {
     const g = new GarageScene(r, (params.get('theme') as any) ?? 'home');
     g.setCar(params.get('build') === 'blackout' ? blackoutBuild() : blueHourBuild());
@@ -18,6 +18,50 @@ export function runDebug(params: URLSearchParams) {
     r.setView(g.scene, g.camera);
     let last = performance.now();
     const loop = () => { const now = performance.now(); const dt = Math.min(0.05, (now - last) / 1000); last = now; g.update(dt); r.render(dt); requestAnimationFrame(loop); };
+    loop();
+    return;
+  }
+  if (params.get('debug') === 'templates') {
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x4a505a);
+    scene.environment = r.nightEnv('studio', { sky: 0x6a7280, ground: 0x2a2c30, lights: [0xffffff, 0xd0e0ff, 0xffe8d0, 0xffffff], strips: 8 });
+    scene.add(new THREE.HemisphereLight(0xdde6f5, 0x404040, 1.4));
+    const kl = new THREE.DirectionalLight(0xffffff, 2.2); kl.position.set(4, 7, 5); scene.add(kl);
+    const fl = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), new THREE.MeshStandardMaterial({ color: 0x5a5e66, roughness: 0.8 })); fl.rotation.x = -Math.PI / 2; scene.add(fl);
+    import('./data/bodyTemplates.json').then((mod) => {
+      const T = (mod as any).default as Record<string, { secs: number[][][]; hl: number; wl: number }>;
+      const names = Object.keys(T);
+      const side = params.get('side') === '1';
+      names.forEach((name, k) => {
+        const t = T[name];
+        const L = 4.4, H = L * t.hl, W = L * t.wl, base = 0.0;
+        const ns = t.secs.length, na = t.secs[0].length;
+        const pos: number[] = [], idx: number[] = [];
+        for (let i = 0; i < ns; i++) {
+          const z = L / 2 - ((i + 0.5) / ns) * L;
+          for (let j = 0; j < 2 * na - 1; j++) {
+            const jj = j < na ? j : 2 * na - 2 - j;
+            const sg = j < na ? 1 : -1;
+            const [xn, yn] = t.secs[i][jj];
+            pos.push(sg * xn * W / 2, base + yn * H, z);
+          }
+        }
+        const nr = 2 * na - 1;
+        for (let i = 0; i < ns - 1; i++) for (let j = 0; j < nr - 1; j++) { const a = i * nr + j, b = (i + 1) * nr + j; idx.push(a, b, a + 1, b, b + 1, a + 1); }
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        g.setIndex(idx);
+        g.computeVertexNormals();
+        const m = new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ color: [0xc4161c, 0x1f6fd1, 0xe0b321, 0xd9dbe0][k % 4], metalness: 0.5, roughness: 0.3, clearcoat: 1, side: THREE.DoubleSide }));
+        if (side) { m.rotation.y = Math.PI / 2; m.position.set((k - 1.5) * 5.2, 0, 0); } else { m.rotation.y = 0.6; m.position.set((k - 1.5) * 5.4, 0, 0); }
+        scene.add(m);
+      });
+    });
+    const cam = new THREE.PerspectiveCamera(26, 1, 0.1, 300);
+    cam.position.set(0, params.get('side') === '1' ? 2 : 6, 19);
+    cam.lookAt(0, 0.6, 0);
+    r.setView(scene, cam);
+    const loop = () => { r.render(1 / 60); requestAnimationFrame(loop); };
     loop();
     return;
   }
