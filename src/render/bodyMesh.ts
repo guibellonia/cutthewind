@@ -106,21 +106,26 @@ export function buildBodyGeometry(shape: BodyShape): BodyGeometry {
   const grid = S.map((s) => shape.section(s));
   const infos = S.map((s) => shape.info(s));
   const ni = S.length;
-  const bucketFor = (s: number, j: number, inf: { shoulder: number; belt: number; edge: number }, yMid: number, xMid: number): Bucket => {
+  const bucketFor = (s: number, j: number, inf: { shoulder: number; belt: number; edge: number }, yMid: number, xMid: number, ny = 0): Bucket => {
     if (j <= 1 && yMid < shape.base + 0.08 && xMid < shape.w0 * 0.75) return 'under';
     // wheel-well ceiling (points lifted onto the arch tunnel) stays dark
-    if (j < inf.shoulder) { const at = shape.archTop(shape.z(s)); if (at > -Infinity && yMid < at + 0.004) return 'under'; }
+    if (j < inf.shoulder) { const at = shape.archTop(shape.z(s)); if (at > -Infinity && yMid < at + 0.004 && xMid > shape.w0 - 0.4) return 'under'; }
     const cabin = s > sh.wsBase && s < sh.rearGlassBase;
     if (!cabin) {
-      if (j <= inf.shoulder) return 'side';
+      // upward-facing panels use the top projection even below the detected shoulder (sloped noses, wings)
+      if (j <= inf.shoulder && ny < 0.7) return 'side';
       return s >= shape.hoodStart && s < sh.wsBase ? 'hood' : 'top';
     }
     if (j < inf.edge) return 'side';
     return s >= sh.roofStart && s <= sh.roofEnd ? 'roof' : 'top';
   };
 
-  const normals = grid.map((row, i) => row.map((p0, j) => {
-    const hint = j <= 2 ? [0.2, -1, 0] : j >= NA - 2 ? [0, 1, 0] : [p0[0], 0.3 * (p0[1] - 0.6), 0];
+  // outward hint from the section contour (bottom centre → side → top centre runs counter-clockwise in x/y),
+  // so folded areas such as wheel-well ceilings and wings over the tyres keep consistent normals
+  const normals = grid.map((row, i) => row.map((_p0, j) => {
+    const a = row[Math.max(0, j - 1)], b = row[Math.min(NA - 1, j + 1)];
+    let hint = [b[1] - a[1], -(b[0] - a[0]), 0];
+    if (Math.hypot(hint[0], hint[1]) < 1e-6) hint = j < NA / 2 ? [0, -1, 0] : [0, 1, 0];
     return gridNormal(grid, i, j, hint);
   }));
 
@@ -129,7 +134,8 @@ export function buildBodyGeometry(shape: BodyShape): BodyGeometry {
     const inf = infos[i + (S[i + 1] - sMid < sMid - S[i] ? 1 : 0)];
     for (let j = 0; j < NA - 1; j++) {
       const pA = grid[i][j], pB = grid[i + 1][j + 1];
-      const b = bucketFor(sMid, j, inf, (pA[1] + pB[1]) / 2, (pA[0] + pB[0]) / 2);
+      const ny = (normals[i][j][1] + normals[i + 1][j][1] + normals[i][j + 1][1] + normals[i + 1][j + 1][1]) / 4;
+      const b = bucketFor(sMid, j, inf, (pA[1] + pB[1]) / 2, (pA[0] + pB[0]) / 2, ny);
       const bl = B[b];
       for (const right of [false, true]) {
         const ids: number[] = [];
@@ -247,7 +253,7 @@ export function buildBodyGeometry(shape: BodyShape): BodyGeometry {
 }
 
 /** Surface patch; `fn(u, v)` returns a point; normals computed numerically and flipped toward `hint`. */
-export function surfacePatch(fn: (u: number, v: number) => number[], nu: number, nv: number, offset: number, hint: number[], flipU = false): THREE.BufferGeometry {
+export function surfacePatch(fn: (u: number, v: number) => number[], nu: number, nv: number, offset: number, hint: number[], flipU = false, keep?: (a: number, b: number) => boolean, maxEdge = Infinity): THREE.BufferGeometry {
   const pos: number[] = [], nrm: number[] = [], uv: number[] = [], idx: number[] = [];
   const eps = 1e-3;
   for (let a = 0; a <= nu; a++) {
@@ -264,8 +270,12 @@ export function surfacePatch(fn: (u: number, v: number) => number[], nu: number,
       uv.push(flipU ? 1 - u : u, v);
     }
   }
+  const P = (i: number) => [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]];
+  const len = (i: number, j: number) => { const p = P(i), q = P(j); return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]); };
   for (let a = 0; a < nu; a++) for (let b = 0; b < nv; b++) {
+    if (keep && !(keep(a, b) && keep(a + 1, b) && keep(a, b + 1) && keep(a + 1, b + 1))) continue;
     const i0 = a * (nv + 1) + b, i1 = (a + 1) * (nv + 1) + b, i2 = (a + 1) * (nv + 1) + b + 1, i3 = a * (nv + 1) + b + 1;
+    if (maxEdge < Infinity && Math.max(len(i0, i1), len(i1, i2), len(i2, i3), len(i3, i0)) > maxEdge) continue;
     idx.push(i0, i1, i2, i0, i2, i3);
   }
   for (let t = 0; t < idx.length; t += 3) {
@@ -292,6 +302,7 @@ export function endDecal(shape: BodyShape, front: boolean): { geo: THREE.BufferG
   const yHi = front ? shape.top(0.07) + 0.02 : shape.top(0.93) + 0.02;
   const NU = 72, NV = 44;
   const Z: number[][] = [];
+  const valid: boolean[][] = [];
   for (let a = 0; a <= NU; a++) {
     const col: number[] = [];
     const x = (a / NU - 0.5) * 2 * xw;
@@ -299,6 +310,7 @@ export function endDecal(shape: BodyShape, front: boolean): { geo: THREE.BufferG
       const y = lerpN(yLo, yHi, b / NV);
       col.push(shape.endZ(x, y, front, 0.25));
     }
+    valid.push(col.map((z) => !isNaN(z)));
     // fill gaps (above the hood line / outside the outline) with the nearest valid value pushed inward
     let last = NaN;
     for (let b = 0; b <= NV; b++) { if (isNaN(col[b])) col[b] = isNaN(last) ? NaN : last + (front ? -0.03 : 0.03); else last = col[b]; }
@@ -313,7 +325,8 @@ export function endDecal(shape: BodyShape, front: boolean): { geo: THREE.BufferG
     const x = (front ? u - 0.5 : 0.5 - u) * 2 * xw;
     return [x, lerpN(yLo, yHi, v), z];
   };
-  const geo = surfacePatch(fn, NU, NV, 0.007, [0, 0, front ? 1 : -1]);
+  const cell = Math.hypot((2 * xw) / NU, (yHi - yLo) / NV);
+  const geo = surfacePatch(fn, NU, NV, 0.007, [0, 0, front ? 1 : -1], false, (a, b) => valid[a][b], cell * 4);
   return { geo, xw, yLo, yHi };
 }
 
@@ -325,6 +338,7 @@ function lerpN(a: number, b: number, t: number) { return a + (b - a) * t; }
  */
 export function projectedPatch(shape: BodyShape, C: number[], n: number[], U: number[], V: number[], w: number, h: number, nu = 16, nv = 8, offset = 0.004): THREE.BufferGeometry {
   const G: number[][][] = [];
+  const ok: boolean[] = [];
   const back = [-n[0], -n[1], -n[2]];
   for (let a = 0; a <= nu; a++) {
     const col: number[][] = [];
@@ -333,6 +347,7 @@ export function projectedPatch(shape: BodyShape, C: number[], n: number[], U: nu
       const q = [C[0] + U[0] * du + V[0] * dv, C[1] + U[1] * du + V[1] * dv, C[2] + U[2] * du + V[2] * dv];
       const o = [q[0] + n[0] * 0.3, q[1] + n[1] * 0.3, q[2] + n[2] * 0.3];
       const hit = shape.raycast(o, back, 0.75);
+      ok.push(!!hit);
       col.push(hit ?? [q[0] - n[0] * 0.06, q[1] - n[1] * 0.06, q[2] - n[2] * 0.06]);
     }
     G.push(col);
@@ -343,7 +358,8 @@ export function projectedPatch(shape: BodyShape, C: number[], n: number[], U: nu
     const p00 = G[ia][ib], p10 = G[ia + 1][ib], p01 = G[ia][ib + 1], p11 = G[ia + 1][ib + 1];
     return [0, 1, 2].map((k) => lerpN(lerpN(p00[k], p10[k], ta), lerpN(p01[k], p11[k], ta), tb));
   };
-  return surfacePatch(fn, nu, nv, offset, n);
+  const cell = Math.hypot(w / nu, h / nv);
+  return surfacePatch(fn, nu, nv, offset, n, false, (a, b) => ok[a * (nv + 1) + b], cell * 2.2);
 }
 
 /** Mirror a geometry across x = 0 (positions, normals and winding). */

@@ -192,6 +192,7 @@ export class BodyShape {
       let x = xn * this.w0;
       let y = this.base + yn * hs;
       let z = z0;
+
       const lowW = 1 - sstep(this.base + 0.12, this.base + 0.32, y);
       if (k.fbChin > 0 && s < 0.16) y -= k.fbChin * (1 - sstep(0.07, 0.16, s)) * lowW;
       if (k.rbChin > 0 && s > 0.86) y -= k.rbChin * sstep(0.86, 0.94, s) * lowW;
@@ -208,7 +209,15 @@ export class BodyShape {
         }
         if (k.duck > 0 && s > this.sh.rearGlassBase) y += k.duck * sstep(0.9, 0.995, s);
       }
-      if (arch > -Infinity && y < arch && j <= info.shoulder) y = arch;
+      if (arch > -Infinity) {
+        // wing over the tyre: the upper surface above the wheel stays a few cm clear of the arch
+        const target = arch + 0.035;
+        const wx = sstep(this.w0 - 0.46, this.w0 - 0.28, x);
+        if (y >= this.wheelY + this.archR * 0.5 && y < target && wx > 0) y = lerp(y, target, wx);
+        // wheel well: only the outer part of the section (where the tyre is) is pushed up to the arch,
+        // leaving an inner wall and a ceiling instead of lifting the whole floor
+        else if (y < arch && j <= info.shoulder && x > this.w0 - 0.36) y = arch;
+      }
       return [x, y, z];
     });
     if (this.secCache.size > 4000) this.secCache.clear();

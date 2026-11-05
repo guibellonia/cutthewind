@@ -229,22 +229,7 @@ export class CarVisual {
     // ---- wheel wells & floor
     const wellMat = new THREE.MeshBasicMaterial({ color: 0x050506, side: THREE.DoubleSide });
     this.disposables.push(wellMat);
-    for (const za of [shape.zFA, shape.zRA]) {
-      for (const sx of [-1, 1]) {
-        const s = shape.sOf(za);
-        const disc = new THREE.Mesh(new THREE.CircleGeometry(shape.archR + 0.05, 24, 0, Math.PI), wellMat);
-        disc.rotation.y = Math.PI / 2;
-        disc.position.set(sx * (shape.halfWidth(s) - 0.3), shape.wheelY - 0.02, za);
-        disc.rotation.z = 0;
-        this.body.add(disc);
-        const arch = new THREE.Mesh(new THREE.CylinderGeometry(shape.archR - 0.004, shape.archR - 0.004, 0.32, 20, 1, true, 0, Math.PI), wellMat);
-        arch.rotation.z = Math.PI / 2;
-        arch.rotation.y = 0;
-        arch.position.set(sx * (shape.halfWidth(s) - 0.15 + shape.flare(s) * 0.5), shape.wheelY, za);
-        this.body.add(arch);
-      }
-    }
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(shape.w0 * 1.7, shape.L * 0.8), wellMat);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(2 * (shape.w0 - 0.4), shape.L * 0.8), wellMat);
     floor.rotation.x = Math.PI / 2;
     floor.position.set(0, shape.sh.sill + 0.03, (shape.zF + shape.zR) / 2);
     this.body.add(floor);
