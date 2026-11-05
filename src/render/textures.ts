@@ -389,25 +389,19 @@ export function frontDecalTextures(model: CarModel, v: VisualConfig, shape: Body
   const bY = (f: number) => bBot + (bTop - bBot) * f;
   const wc = F.halfW(bY(0.4), 0.2) * 0.9;
   const intake = kit.intake === 'stock' ? (sh.grille === 'exoticMouth' ? 'exotic' : sh.grille === 'slot' ? 'center' : 'slot') : kit.intake;
-  let plateX = 0, plateY = 0.66;
+  // fc: top of whatever intake sits behind the plate (fraction of the bumper height); the plate goes above it
+  let plateX = 0, fc = 0.36;
   switch (intake) {
-    case 'center': dark(-wc * 0.45, bY(0.08), wc * 0.45, bY(0.42), 'mesh', 14); plateY = 0.7; break;
-    case 'triple': dark(-wc * 0.3, bY(0.08), wc * 0.3, bY(0.45), 'mesh', 10); dark(-wc * 0.88, bY(0.1), -wc * 0.45, bY(0.45), 'mesh', 10); dark(wc * 0.45, bY(0.1), wc * 0.88, bY(0.45), 'mesh', 10); plateY = 0.72; break;
-    case 'wide': dark(-wc * 0.9, bY(0.06), wc * 0.9, bY(0.48), 'mesh', 16); plateX = -wc * 0.52; plateY = 0.74; break;
-    case 'dualSide': dark(-wc * 0.94, bY(0.08), -wc * 0.46, bY(0.6), 'honey', 10); dark(wc * 0.46, bY(0.08), wc * 0.94, bY(0.6), 'honey', 10); dark(-wc * 0.34, bY(0.08), wc * 0.34, bY(0.3), 'honey', 6); plateY = 0.6; break;
-    case 'mesh': dark(-wc * 0.94, bY(0.06), wc * 0.94, bY(0.58), 'mesh', 12); plateX = wc * 0.52; plateY = 0.78; break;
-    case 'slats': dark(-wc * 0.8, bY(0.08), wc * 0.8, bY(0.44), 'slats', 18); plateY = 0.7; break;
-    case 'exotic': dark(-wc * 0.55, bY(0.1), wc * 0.55, bY(0.62), 'mesh', 26); dark(-wc * 1.0, bY(0.12), -wc * 0.65, bY(0.66), 'mesh', 14); dark(wc * 0.65, bY(0.12), wc * 1.0, bY(0.66), 'mesh', 14); plateY = 0.82; break;
-    case 'slot': default: dark(-wc * 0.72, bY(0.06), wc * 0.72, bY(0.36), 'bars', 10); plateY = 0.66;
+    case 'center': dark(-wc * 0.45, bY(0.06), wc * 0.45, bY(0.42), 'mesh', 14); fc = 0.42; break;
+    case 'triple': dark(-wc * 0.3, bY(0.06), wc * 0.3, bY(0.42), 'mesh', 10); dark(-wc * 0.88, bY(0.08), -wc * 0.45, bY(0.5), 'mesh', 10); dark(wc * 0.45, bY(0.08), wc * 0.88, bY(0.5), 'mesh', 10); fc = 0.42; break;
+    case 'wide': dark(-wc * 0.9, bY(0.06), wc * 0.9, bY(0.46), 'mesh', 16); fc = 0.46; break;
+    case 'dualSide': dark(-wc * 0.94, bY(0.08), -wc * 0.46, bY(0.62), 'honey', 10); dark(wc * 0.46, bY(0.08), wc * 0.94, bY(0.62), 'honey', 10); dark(-wc * 0.34, bY(0.06), wc * 0.34, bY(0.3), 'honey', 6); fc = 0.3; break;
+    case 'mesh': dark(-wc * 0.94, bY(0.06), wc * 0.94, bY(0.5), 'mesh', 12); fc = 0.5; break;
+    case 'slats': dark(-wc * 0.8, bY(0.06), wc * 0.8, bY(0.42), 'slats', 18); fc = 0.42; break;
+    case 'exotic': dark(-wc * 0.55, bY(0.08), wc * 0.55, bY(0.55), 'mesh', 26); dark(-wc * 1.0, bY(0.1), -wc * 0.65, bY(0.66), 'mesh', 14); dark(wc * 0.65, bY(0.1), wc * 1.0, bY(0.66), 'mesh', 14); fc = 0.55; break;
+    case 'slot': default: dark(-wc * 0.72, bY(0.06), wc * 0.72, bY(0.34), 'bars', 10); fc = 0.34;
   }
-  // lower air dam: a textured black strip that gives the bumper a defined bottom edge
-  if (!kit.lip) {
-    const ad = Math.min(0.05, (bTop - bBot) * 0.16);
-    ctx.save();
-    rrect(ctx, X(-wc * 0.96), Y(F.yBot + ad), px(wc * 1.92), Y(F.yBot - 0.02) - Y(F.yBot + ad), 6); ctx.clip();
-    meshFill(ctx, 0, 0, W, H, 'bars', '#0c0d0f', '#1d1f23');
-    ctx.restore();
-  }
+  void plateX;
   // fogs
   const fog = kit.fog ?? 0;
   if (fog) for (const side of [-1, 1]) {
@@ -423,10 +417,12 @@ export function frontDecalTextures(model: CarModel, v: VisualConfig, shape: Body
   if (kit.lip) { ctx.fillStyle = kit.lip === 2 ? '#15171a' : '#0d0e10'; ctx.fillRect(0, Y(F.yBot + 0.035), W, H - Y(F.yBot + 0.035)); }
   // plate
   const jp = jpPlate(model);
-  const pw = jp ? 0.33 : 0.44, ph = jp ? 0.15 : 0.11;
-  const pyc = Math.min(bY(plateY), bTop - ph / 2 - 0.01);
-  ctx.fillStyle = '#060607'; rrect(ctx, X(plateX - pw / 2 - 0.012), Y(pyc + ph / 2 + 0.012), px(pw + 0.024), px(ph + 0.024), 6); ctx.fill();
-  drawPlate(ctx, X(plateX), Y(pyc), px(pw), px(ph), v.plate, jp);
+  const room = bTop - 0.008 - (bY(fc) + 0.018);
+  const ps = Math.max(0.62, Math.min(1, room / (jp ? 0.15 : 0.11)));
+  const pw = (jp ? 0.33 : 0.44) * ps, ph = (jp ? 0.15 : 0.11) * ps;
+  const pyc = Math.min(bTop - 0.008 - ph / 2, bY(fc) + 0.018 + ph / 2);
+  ctx.fillStyle = '#060607'; rrect(ctx, X(-pw / 2 - 0.01), Y(pyc + ph / 2 + 0.01), px(pw + 0.02), px(ph + 0.02), 6); ctx.fill();
+  drawPlate(ctx, X(0), Y(pyc), px(pw), px(ph), v.plate, jp);
   // badge
   const badgeY = sh.grille === 'smile' ? gY(0.78) : sh.grille === 'exoticMouth' ? gY(0.55) : sh.grille === 'slot' ? gY(0.86) : sh.grille === 'muscleWide' ? hb.yc : gY(0.5);
   drawLogo(ctx, model.brand, X(0), Y(badgeY), Math.min(px(0.075), Math.abs(Y(gY(0.9)) - Y(gY(0.1))) * 0.75));
